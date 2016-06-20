@@ -1,2 +1,3 @@
 # From https://www.kernel.org/pub/linux/utils/fs/xfs/xfsprogs/sha256sums.asc
 sha256 c3a6d87b564d7738243c507df82276bed982265e345363a95f2c764e8a5f5bb2  xfsprogs-4.11.0.tar.xz
+sha256 95aaf9e1d524bda66db89e3bef82fa21e9a926fef6f29a4338aea9ad98cf650c  xfsprogs-4.5.0.tar.xz
