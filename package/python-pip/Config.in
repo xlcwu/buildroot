@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PYTHON_PIP
+        bool "python-pip"
+        help
+	  pip is a package management system used to install
+	  and manage software packages written in Python.
+
+	  https://pip.pypa.io/
