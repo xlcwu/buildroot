@@ -1,0 +1,78 @@
+From 93c9004abb58015baf395f1a57114cde8ff8489b Mon Sep 17 00:00:00 2001
+From: Nalin Dahyabhai <nalin@redhat.com>
+Date: Thu, 17 Mar 2016 18:25:14 -0400
+Subject: [PATCH 07/41] BACKPORT: Improve error reporting when following
+ journals
+
+Upstream reference: https://github.com/docker/docker/pull/21309
+
+When we set up to start following a journal, if we get error results
+from sd_journal_get_fd() or sd_journal_get_events() that prevent us from
+following the journal, report the error instead of just mysteriously
+failing.
+
+Signed-off-by: Nalin Dahyabhai <nalin@redhat.com> (github: nalind)
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/logger/journald/read.go | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/daemon/logger/journald/read.go b/daemon/logger/journald/read.go
+index d2b2109..ce3492f 100644
+--- a/daemon/logger/journald/read.go
++++ b/daemon/logger/journald/read.go
+@@ -64,11 +64,11 @@ package journald
+ //		fds[0].events = POLLHUP;
+ //		fds[1].fd = sd_journal_get_fd(j);
+ //		if (fds[1].fd < 0) {
+-//			return -1;
++//			return fds[1].fd;
+ //		}
+ //		jevents = sd_journal_get_events(j);
+ //		if (jevents < 0) {
+-//			return -1;
++//			return jevents;
+ //		}
+ //		fds[1].events = jevents;
+ //		sd_journal_get_timeout(j, &when);
+@@ -82,7 +82,7 @@ package journald
+ //		i = poll(fds, 2, timeout);
+ //		if ((i == -1) && (errno != EINTR)) {
+ //			/* An unexpected error. */
+-//			return -1;
++//			return (errno != 0) ? -errno : -EINTR;
+ //		}
+ //		if (fds[0].revents & POLLHUP) {
+ //			/* The close notification pipe was closed. */
+@@ -102,6 +102,7 @@ import (
+ 	"time"
+ 	"unsafe"
+ 
++	"github.com/Sirupsen/logrus"
+ 	"github.com/coreos/go-systemd/journal"
+ 	"github.com/docker/docker/daemon/logger"
+ )
+@@ -178,9 +179,18 @@ func (s *journald) followJournal(logWatcher *logger.LogWatcher, config logger.Re
+ 	s.readers.readers[logWatcher] = logWatcher
+ 	s.readers.mu.Unlock()
+ 	go func() {
+-		// Keep copying journal data out until we're notified to stop.
+-		for C.wait_for_data_or_close(j, pfd[0]) == 1 {
++		// Keep copying journal data out until we're notified to stop
++		// or we hit an error.
++		status := C.wait_for_data_or_close(j, pfd[0])
++		for status == 1 {
+ 			cursor = s.drainJournal(logWatcher, config, j, cursor)
++			status = C.wait_for_data_or_close(j, pfd[0])
++		}
++		if status < 0 {
++			cerrstr := C.strerror(C.int(-status))
++			errstr := C.GoString(cerrstr)
++			fmtstr := "error %q while attempting to follow journal for container %q"
++			logrus.Errorf(fmtstr, errstr, s.vars["CONTAINER_ID_FULL"])
+ 		}
+ 		// Clean up.
+ 		C.close(pfd[0])
+-- 
+1.9.1
+

@@ -1,0 +1,518 @@
+From db7583b059289e7420fc603b2394e7f5c8f7605b Mon Sep 17 00:00:00 2001
+From: Riyaz Faizullabhoy <riyaz.faizullabhoy@docker.com>
+Date: Thu, 25 Feb 2016 16:30:36 -0800
+Subject: [PATCH 14/41] BACKPORT: bumping miekg/pkcs11 dependency for go1.6
+
+Upstream reference: https://github.com/docker/docker/pull/20703
+
+Signed-off-by: Riyaz Faizullabhoy <riyaz.faizullabhoy@docker.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ hack/vendor.sh                                 |  2 +-
+ vendor/src/github.com/miekg/pkcs11/.travis.yml | 14 ++++
+ vendor/src/github.com/miekg/pkcs11/README.md   | 42 ++++++++----
+ vendor/src/github.com/miekg/pkcs11/const.go    | 14 ++--
+ vendor/src/github.com/miekg/pkcs11/pkcs11.go   | 63 +++++++++++------
+ vendor/src/github.com/miekg/pkcs11/types.go    | 95 ++++++++++++--------------
+ 6 files changed, 139 insertions(+), 91 deletions(-)
+ create mode 100644 vendor/src/github.com/miekg/pkcs11/.travis.yml
+
+diff --git a/hack/vendor.sh b/hack/vendor.sh
+index 60a72f9..9cf1252 100755
+--- a/hack/vendor.sh
++++ b/hack/vendor.sh
+@@ -53,7 +53,7 @@ clone git github.com/vbatts/tar-split v0.9.11
+ clone git github.com/docker/notary v0.2.0
+ 
+ clone git google.golang.org/grpc 174192fc93efcb188fc8f46ca447f0da606b6885 https://github.com/grpc/grpc-go.git
+-clone git github.com/miekg/pkcs11 80f102b5cac759de406949c47f0928b99bd64cdf
++clone git github.com/miekg/pkcs11 df8ae6ca730422dba20c768ff38ef7d79077a59f
+ clone git github.com/docker/go v1.5.1-1-1-gbaf439e
+ clone git github.com/agl/ed25519 d2b94fd789ea21d12fac1a4443dd3a3f79cda72c
+ 
+diff --git a/vendor/src/github.com/miekg/pkcs11/.travis.yml b/vendor/src/github.com/miekg/pkcs11/.travis.yml
+new file mode 100644
+index 0000000..4775733
+--- /dev/null
++++ b/vendor/src/github.com/miekg/pkcs11/.travis.yml
+@@ -0,0 +1,14 @@
++language: go
++sudo: required
++dist: trusty
++
++go:
++  - 1.5
++  - 1.6
++
++script:
++  - go test -v ./...
++
++before_script:
++  - sudo apt-get update
++  - sudo apt-get -y install libsofthsm
+diff --git a/vendor/src/github.com/miekg/pkcs11/README.md b/vendor/src/github.com/miekg/pkcs11/README.md
+index 6e7e550..f41c474 100644
+--- a/vendor/src/github.com/miekg/pkcs11/README.md
++++ b/vendor/src/github.com/miekg/pkcs11/README.md
+@@ -1,13 +1,11 @@
+-# PKCS#11
++# PKCS#11 [![Build Status](https://travis-ci.org/miekg/pkcs11.png?branch=master)](https://travis-ci.org/miekg/pkcs11)
+ 
+ This is a Go implementation of the PKCS#11 API. It wraps the library closely, but uses Go idiom
+ were it makes sense. It has been tested with SoftHSM.
+ 
+ ## SoftHSM
+ 
+-* Make it use a custom configuration file
+-
+-        export SOFTHSM_CONF=$PWD/softhsm.conf
++* Make it use a custom configuration file `export SOFTHSM_CONF=$PWD/softhsm.conf`
+ 
+ * Then use `softhsm` to init it
+ 
+@@ -22,16 +20,37 @@ were it makes sense. It has been tested with SoftHSM.
+ A skeleton program would look somewhat like this (yes, pkcs#11 is verbose):
+ 
+     p := pkcs11.New("/usr/lib/softhsm/libsofthsm.so")
+-    p.Initialize()
++    err := p.Initialize()
++    if err != nil {
++        panic(err)
++    }
++
+     defer p.Destroy()
+     defer p.Finalize()
+-    slots, _ := p.GetSlotList(true)
+-    session, _ := p.OpenSession(slots[0], pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
++
++    slots, err := p.GetSlotList(true)
++    if err != nil {
++        panic(err)
++    }
++
++    session, err := p.OpenSession(slots[0], pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
++    if err != nil {
++        panic(err)
++    }
+     defer p.CloseSession(session)
+-    p.Login(session, pkcs11.CKU_USER, "1234")
++
++    err = p.Login(session, pkcs11.CKU_USER, "1234")
++    if err != nil {
++        panic(err)
++    }
+     defer p.Logout(session)
++
+     p.DigestInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_SHA_1, nil)})
+     hash, err := p.Digest(session, []byte("this is a string"))
++    if err != nil {
++        panic(err)
++    }
++
+     for _, d := range hash {
+             fmt.Printf("%x", d)
+     }
+@@ -41,8 +60,5 @@ Further examples are included in the tests.
+ 
+ # TODO
+ 
+-* Fix/double check endian stuff, see types.go NewAttribute();
+-* Kill C.Sizeof in that same function.
+-* Look at the memory copying in fast functions (sign, hash etc).
+-* Fix inconsistencies in naming?
+-* Add tests -- there are way too few
++* Fix/double check endian stuff, see types.go NewAttribute()
++* Look at the memory copying in fast functions (sign, hash etc)
+diff --git a/vendor/src/github.com/miekg/pkcs11/const.go b/vendor/src/github.com/miekg/pkcs11/const.go
+index 79a25e3..5901b60 100644
+--- a/vendor/src/github.com/miekg/pkcs11/const.go
++++ b/vendor/src/github.com/miekg/pkcs11/const.go
+@@ -23,9 +23,9 @@ const (
+ 	CKO_VENDOR_DEFINED    uint = 0x80000000
+ )
+ 
+-// Generated with: awk '/#define CK[AFKMR]/{ print $2 "=" $3 }' pkcs11t.h
++// Generated with: awk '/#define CK[AFKMRC]/{ print $2 "=" $3 }' pkcs11t.h
+ 
+-// All the flag (CKF_), attribute (CKA_), error code (CKR_), key type (CKK_) and 
++// All the flag (CKF_), attribute (CKA_), error code (CKR_), key type (CKK_), certificate type (CKC_) and
+ // mechanism (CKM_) constants as defined in PKCS#11.
+ const (
+ 	CKF_TOKEN_PRESENT                    = 0x00000001
+@@ -83,6 +83,10 @@ const (
+ 	CKK_CAMELLIA                         = 0x00000025
+ 	CKK_ARIA                             = 0x00000026
+ 	CKK_VENDOR_DEFINED                   = 0x80000000
++	CKC_X_509                            = 0x00000000
++	CKC_X_509_ATTR_CERT                  = 0x00000001
++	CKC_WTLS                             = 0x00000002
++	CKC_VENDOR_DEFINED                   = 0x80000000
+ 	CKF_ARRAY_ATTRIBUTE                  = 0x40000000
+ 	CKA_CLASS                            = 0x00000000
+ 	CKA_TOKEN                            = 0x00000001
+@@ -117,11 +121,11 @@ const (
+ 	CKA_VERIFY                           = 0x0000010A
+ 	CKA_VERIFY_RECOVER                   = 0x0000010B
+ 	CKA_DERIVE                           = 0x0000010C
+-	CKA_START_DATE                       = 0x00000110 // Use time.Time as a value.
+-	CKA_END_DATE                         = 0x00000111 // Use time.Time as a value.
++	CKA_START_DATE                       = 0x00000110
++	CKA_END_DATE                         = 0x00000111
+ 	CKA_MODULUS                          = 0x00000120
+ 	CKA_MODULUS_BITS                     = 0x00000121
+-	CKA_PUBLIC_EXPONENT                  = 0x00000122 // Use []byte slice as a value.
++	CKA_PUBLIC_EXPONENT                  = 0x00000122
+ 	CKA_PRIVATE_EXPONENT                 = 0x00000123
+ 	CKA_PRIME_1                          = 0x00000124
+ 	CKA_PRIME_2                          = 0x00000125
+diff --git a/vendor/src/github.com/miekg/pkcs11/pkcs11.go b/vendor/src/github.com/miekg/pkcs11/pkcs11.go
+index fc0c1d9..424e749 100644
+--- a/vendor/src/github.com/miekg/pkcs11/pkcs11.go
++++ b/vendor/src/github.com/miekg/pkcs11/pkcs11.go
+@@ -1000,7 +1000,8 @@ func (c *Ctx) Logout(sh SessionHandle) error {
+ /* CreateObject creates a new object. */
+ func (c *Ctx) CreateObject(sh SessionHandle, temp []*Attribute) (ObjectHandle, error) {
+ 	var obj C.CK_OBJECT_HANDLE
+-	t, tcount := cAttributeList(temp)
++	arena, t, tcount := cAttributeList(temp)
++	defer arena.Free()
+ 	e := C.CreateObject(c.ctx, C.CK_SESSION_HANDLE(sh), t, tcount, C.CK_OBJECT_HANDLE_PTR(&obj))
+ 	e1 := toError(e)
+ 	if e1 == nil {
+@@ -1012,7 +1013,8 @@ func (c *Ctx) CreateObject(sh SessionHandle, temp []*Attribute) (ObjectHandle, e
+ /* CopyObject copies an object, creating a new object for the copy. */
+ func (c *Ctx) CopyObject(sh SessionHandle, o ObjectHandle, temp []*Attribute) (ObjectHandle, error) {
+ 	var obj C.CK_OBJECT_HANDLE
+-	t, tcount := cAttributeList(temp)
++	arena, t, tcount := cAttributeList(temp)
++	defer arena.Free()
+ 
+ 	e := C.CopyObject(c.ctx, C.CK_SESSION_HANDLE(sh), C.CK_OBJECT_HANDLE(o), t, tcount, C.CK_OBJECT_HANDLE_PTR(&obj))
+ 	e1 := toError(e)
+@@ -1062,7 +1064,8 @@ func (c *Ctx) GetAttributeValue(sh SessionHandle, o ObjectHandle, a []*Attribute
+ 
+ /* SetAttributeValue modifies the value of one or more object attributes */
+ func (c *Ctx) SetAttributeValue(sh SessionHandle, o ObjectHandle, a []*Attribute) error {
+-	pa, palen := cAttributeList(a)
++	arena, pa, palen := cAttributeList(a)
++	defer arena.Free()
+ 	e := C.SetAttributeValue(c.ctx, C.CK_SESSION_HANDLE(sh), C.CK_OBJECT_HANDLE(o), pa, palen)
+ 	return toError(e)
+ }
+@@ -1070,7 +1073,8 @@ func (c *Ctx) SetAttributeValue(sh SessionHandle, o ObjectHandle, a []*Attribute
+ // FindObjectsInit initializes a search for token and session
+ // objects that match a template.
+ func (c *Ctx) FindObjectsInit(sh SessionHandle, temp []*Attribute) error {
+-	t, tcount := cAttributeList(temp)
++	arena, t, tcount := cAttributeList(temp)
++	defer arena.Free()
+ 	e := C.FindObjectsInit(c.ctx, C.CK_SESSION_HANDLE(sh), t, tcount)
+ 	return toError(e)
+ }
+@@ -1106,7 +1110,8 @@ func (c *Ctx) FindObjectsFinal(sh SessionHandle) error {
+ 
+ /* EncryptInit initializes an encryption operation. */
+ func (c *Ctx) EncryptInit(sh SessionHandle, m []*Mechanism, o ObjectHandle) error {
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.EncryptInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(o))
+ 	return toError(e)
+ }
+@@ -1158,7 +1163,8 @@ func (c *Ctx) EncryptFinal(sh SessionHandle) ([]byte, error) {
+ 
+ /* DecryptInit initializes a decryption operation. */
+ func (c *Ctx) DecryptInit(sh SessionHandle, m []*Mechanism, o ObjectHandle) error {
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.DecryptInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(o))
+ 	return toError(e)
+ }
+@@ -1210,7 +1216,8 @@ func (c *Ctx) DecryptFinal(sh SessionHandle) ([]byte, error) {
+ 
+ /* DigestInit initializes a message-digesting operation. */
+ func (c *Ctx) DigestInit(sh SessionHandle, m []*Mechanism) error {
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.DigestInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech)
+ 	return toError(e)
+ }
+@@ -1270,7 +1277,8 @@ func (c *Ctx) DigestFinal(sh SessionHandle) ([]byte, error) {
+ // the data, and plaintext cannot be recovered from the
+ // signature.
+ func (c *Ctx) SignInit(sh SessionHandle, m []*Mechanism, o ObjectHandle) error {
+-	mech, _ := cMechanismList(m) // Only the first is used, but still use a list.
++	arena, mech, _ := cMechanismList(m) // Only the first is used, but still use a list.
++	defer arena.Free()
+ 	e := C.SignInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(o))
+ 	return toError(e)
+ }
+@@ -1317,7 +1325,8 @@ func (c *Ctx) SignFinal(sh SessionHandle) ([]byte, error) {
+ // SignRecoverInit initializes a signature operation, where
+ // the data can be recovered from the signature.
+ func (c *Ctx) SignRecoverInit(sh SessionHandle, m []*Mechanism, key ObjectHandle) error {
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.SignRecoverInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(key))
+ 	return toError(e)
+ }
+@@ -1342,7 +1351,8 @@ func (c *Ctx) SignRecover(sh SessionHandle, data []byte) ([]byte, error) {
+ // signature is an appendix to the data, and plaintext cannot
+ // be recovered from the signature (e.g. DSA).
+ func (c *Ctx) VerifyInit(sh SessionHandle, m []*Mechanism, key ObjectHandle) error {
+-	mech, _ := cMechanismList(m) // only use one here
++	arena, mech, _ := cMechanismList(m) // only use one here
++	defer arena.Free()
+ 	e := C.VerifyInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(key))
+ 	return toError(e)
+ }
+@@ -1373,7 +1383,8 @@ func (c *Ctx) VerifyFinal(sh SessionHandle, signature []byte) error {
+ // VerifyRecoverInit initializes a signature verification
+ // operation, where the data is recovered from the signature.
+ func (c *Ctx) VerifyRecoverInit(sh SessionHandle, m []*Mechanism, key ObjectHandle) error {
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.VerifyRecoverInit(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(key))
+ 	return toError(e)
+ }
+@@ -1458,8 +1469,10 @@ func (c *Ctx) DecryptVerifyUpdate(sh SessionHandle, cipher []byte) ([]byte, erro
+ /* GenerateKey generates a secret key, creating a new key object. */
+ func (c *Ctx) GenerateKey(sh SessionHandle, m []*Mechanism, temp []*Attribute) (ObjectHandle, error) {
+ 	var key C.CK_OBJECT_HANDLE
+-	t, tcount := cAttributeList(temp)
+-	mech, _ := cMechanismList(m)
++	attrarena, t, tcount := cAttributeList(temp)
++	defer attrarena.Free()
++	mecharena, mech, _ := cMechanismList(m)
++	defer mecharena.Free()
+ 	e := C.GenerateKey(c.ctx, C.CK_SESSION_HANDLE(sh), mech, t, tcount, C.CK_OBJECT_HANDLE_PTR(&key))
+ 	e1 := toError(e)
+ 	if e1 == nil {
+@@ -1474,9 +1487,12 @@ func (c *Ctx) GenerateKeyPair(sh SessionHandle, m []*Mechanism, public, private
+ 		pubkey  C.CK_OBJECT_HANDLE
+ 		privkey C.CK_OBJECT_HANDLE
+ 	)
+-	pub, pubcount := cAttributeList(public)
+-	priv, privcount := cAttributeList(private)
+-	mech, _ := cMechanismList(m)
++	pubarena, pub, pubcount := cAttributeList(public)
++	defer pubarena.Free()
++	privarena, priv, privcount := cAttributeList(private)
++	defer privarena.Free()
++	mecharena, mech, _ := cMechanismList(m)
++	defer mecharena.Free()
+ 	e := C.GenerateKeyPair(c.ctx, C.CK_SESSION_HANDLE(sh), mech, pub, pubcount, priv, privcount, C.CK_OBJECT_HANDLE_PTR(&pubkey), C.CK_OBJECT_HANDLE_PTR(&privkey))
+ 	e1 := toError(e)
+ 	if e1 == nil {
+@@ -1491,7 +1507,8 @@ func (c *Ctx) WrapKey(sh SessionHandle, m []*Mechanism, wrappingkey, key ObjectH
+ 		wrappedkey    C.CK_BYTE_PTR
+ 		wrappedkeylen C.CK_ULONG
+ 	)
+-	mech, _ := cMechanismList(m)
++	arena, mech, _ := cMechanismList(m)
++	defer arena.Free()
+ 	e := C.WrapKey(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(wrappingkey), C.CK_OBJECT_HANDLE(key), &wrappedkey, &wrappedkeylen)
+ 	if toError(e) != nil {
+ 		return nil, toError(e)
+@@ -1504,8 +1521,10 @@ func (c *Ctx) WrapKey(sh SessionHandle, m []*Mechanism, wrappingkey, key ObjectH
+ /* UnwrapKey unwraps (decrypts) a wrapped key, creating a new key object. */
+ func (c *Ctx) UnwrapKey(sh SessionHandle, m []*Mechanism, unwrappingkey ObjectHandle, wrappedkey []byte, a []*Attribute) (ObjectHandle, error) {
+ 	var key C.CK_OBJECT_HANDLE
+-	ac, aclen := cAttributeList(a)
+-	mech, _ := cMechanismList(m)
++	attrarena, ac, aclen := cAttributeList(a)
++	defer attrarena.Free()
++	mecharena, mech, _ := cMechanismList(m)
++	defer mecharena.Free()
+ 	e := C.UnwrapKey(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(unwrappingkey), C.CK_BYTE_PTR(unsafe.Pointer(&wrappedkey[0])), C.CK_ULONG(len(wrappedkey)), ac, aclen, &key)
+ 	return ObjectHandle(key), toError(e)
+ }
+@@ -1513,8 +1532,10 @@ func (c *Ctx) UnwrapKey(sh SessionHandle, m []*Mechanism, unwrappingkey ObjectHa
+ // DeriveKey derives a key from a base key, creating a new key object. */
+ func (c *Ctx) DeriveKey(sh SessionHandle, m []*Mechanism, basekey ObjectHandle, a []*Attribute) (ObjectHandle, error) {
+ 	var key C.CK_OBJECT_HANDLE
+-	ac, aclen := cAttributeList(a)
+-	mech, _ := cMechanismList(m)
++	attrarena, ac, aclen := cAttributeList(a)
++	defer attrarena.Free()
++	mecharena, mech, _ := cMechanismList(m)
++	defer mecharena.Free()
+ 	e := C.DeriveKey(c.ctx, C.CK_SESSION_HANDLE(sh), mech, C.CK_OBJECT_HANDLE(basekey), ac, aclen, &key)
+ 	return ObjectHandle(key), toError(e)
+ }
+diff --git a/vendor/src/github.com/miekg/pkcs11/types.go b/vendor/src/github.com/miekg/pkcs11/types.go
+index 9a709cd..e789bf1 100644
+--- a/vendor/src/github.com/miekg/pkcs11/types.go
++++ b/vendor/src/github.com/miekg/pkcs11/types.go
+@@ -15,17 +15,13 @@ package pkcs11
+ #define CK_CALLBACK_FUNCTION(returnType, name) returnType (* name)
+ 
+ #include <stdlib.h>
++#include <string.h>
+ #include "pkcs11.h"
+ 
+ CK_ULONG Index(CK_ULONG_PTR array, CK_ULONG i)
+ {
+ 	return array[i];
+ }
+-
+-CK_ULONG Sizeof()
+-{
+-	return sizeof(CK_ULONG);
+-}
+ */
+ import "C"
+ 
+@@ -35,6 +31,21 @@ import (
+ 	"unsafe"
+ )
+ 
++type arena []unsafe.Pointer
++
++func (a *arena) Allocate(obj []byte) (C.CK_VOID_PTR, C.CK_ULONG) {
++	cobj := C.calloc(C.size_t(len(obj)), 1)
++	*a = append(*a, cobj)
++	C.memmove(cobj, unsafe.Pointer(&obj[0]), C.size_t(len(obj)))
++	return C.CK_VOID_PTR(cobj), C.CK_ULONG(len(obj))
++}
++
++func (a arena) Free() {
++	for _, p := range a {
++		C.free(p)
++	}
++}
++
+ // toList converts from a C style array to a []uint.
+ func toList(clist C.CK_ULONG_PTR, size C.CK_ULONG) []uint {
+ 	l := make([]uint, int(size))
+@@ -53,6 +64,11 @@ func cBBool(x bool) C.CK_BBOOL {
+ 	return C.CK_BBOOL(C.CK_FALSE)
+ }
+ 
++func uintToBytes(x uint64) []byte {
++	ul := C.CK_ULONG(x)
++	return C.GoBytes(unsafe.Pointer(&ul), C.int(unsafe.Sizeof(ul)))
++}
++
+ // Error represents an PKCS#11 error.
+ type Error uint
+ 
+@@ -156,46 +172,23 @@ func NewAttribute(typ uint, x interface{}) *Attribute {
+ 	if x == nil {
+ 		return a
+ 	}
+-	switch x.(type) {
+-	case bool: // create bbool
+-		if x.(bool) {
++	switch v := x.(type) {
++	case bool:
++		if v {
+ 			a.Value = []byte{1}
+-			break
+-		}
+-		a.Value = []byte{0}
+-	case uint, int:
+-		var y uint
+-		if _, ok := x.(int); ok {
+-			y = uint(x.(int))
+-		}
+-		if _, ok := x.(uint); ok {
+-			y = x.(uint)
+-		}
+-		// TODO(miek): ugly!
+-		switch int(C.Sizeof()) {
+-		case 4:
+-			a.Value = make([]byte, 4)
+-			a.Value[0] = byte(y)
+-			a.Value[1] = byte(y >> 8)
+-			a.Value[2] = byte(y >> 16)
+-			a.Value[3] = byte(y >> 24)
+-		case 8:
+-			a.Value = make([]byte, 8)
+-			a.Value[0] = byte(y)
+-			a.Value[1] = byte(y >> 8)
+-			a.Value[2] = byte(y >> 16)
+-			a.Value[3] = byte(y >> 24)
+-			a.Value[4] = byte(y >> 32)
+-			a.Value[5] = byte(y >> 40)
+-			a.Value[6] = byte(y >> 48)
+-			a.Value[7] = byte(y >> 56)
++		} else {
++			a.Value = []byte{0}
+ 		}
++	case int:
++		a.Value = uintToBytes(uint64(v))
++	case uint:
++		a.Value = uintToBytes(uint64(v))
+ 	case string:
+-		a.Value = []byte(x.(string))
+-	case []byte: // just copy
+-		a.Value = x.([]byte)
++		a.Value = []byte(v)
++	case []byte:
++		a.Value = v
+ 	case time.Time: // for CKA_DATE
+-		a.Value = cDate(x.(time.Time))
++		a.Value = cDate(v)
+ 	default:
+ 		panic("pkcs11: unhandled attribute type")
+ 	}
+@@ -203,9 +196,10 @@ func NewAttribute(typ uint, x interface{}) *Attribute {
+ }
+ 
+ // cAttribute returns the start address and the length of an attribute list.
+-func cAttributeList(a []*Attribute) (C.CK_ATTRIBUTE_PTR, C.CK_ULONG) {
++func cAttributeList(a []*Attribute) (arena, C.CK_ATTRIBUTE_PTR, C.CK_ULONG) {
++	var arena arena
+ 	if len(a) == 0 {
+-		return nil, 0
++		return nil, nil, 0
+ 	}
+ 	pa := make([]C.CK_ATTRIBUTE, len(a))
+ 	for i := 0; i < len(a); i++ {
+@@ -213,10 +207,9 @@ func cAttributeList(a []*Attribute) (C.CK_ATTRIBUTE_PTR, C.CK_ULONG) {
+ 		if a[i].Value == nil {
+ 			continue
+ 		}
+-		pa[i].pValue = C.CK_VOID_PTR((&a[i].Value[0]))
+-		pa[i].ulValueLen = C.CK_ULONG(len(a[i].Value))
++		pa[i].pValue, pa[i].ulValueLen = arena.Allocate(a[i].Value)
+ 	}
+-	return C.CK_ATTRIBUTE_PTR(&pa[0]), C.CK_ULONG(len(a))
++	return arena, C.CK_ATTRIBUTE_PTR(&pa[0]), C.CK_ULONG(len(a))
+ }
+ 
+ func cDate(t time.Time) []byte {
+@@ -250,9 +243,10 @@ func NewMechanism(mech uint, x interface{}) *Mechanism {
+ 	return m
+ }
+ 
+-func cMechanismList(m []*Mechanism) (C.CK_MECHANISM_PTR, C.CK_ULONG) {
++func cMechanismList(m []*Mechanism) (arena, C.CK_MECHANISM_PTR, C.CK_ULONG) {
++	var arena arena
+ 	if len(m) == 0 {
+-		return nil, 0
++		return nil, nil, 0
+ 	}
+ 	pm := make([]C.CK_MECHANISM, len(m))
+ 	for i := 0; i < len(m); i++ {
+@@ -260,10 +254,9 @@ func cMechanismList(m []*Mechanism) (C.CK_MECHANISM_PTR, C.CK_ULONG) {
+ 		if m[i].Parameter == nil {
+ 			continue
+ 		}
+-		pm[i].pParameter = C.CK_VOID_PTR(&(m[i].Parameter[0]))
+-		pm[i].ulParameterLen = C.CK_ULONG(len(m[i].Parameter))
++		pm[i].pParameter, pm[i].ulParameterLen = arena.Allocate(m[i].Parameter)
+ 	}
+-	return C.CK_MECHANISM_PTR(&pm[0]), C.CK_ULONG(len(m))
++	return arena, C.CK_MECHANISM_PTR(&pm[0]), C.CK_ULONG(len(m))
+ }
+ 
+ // MechanismInfo provides information about a particular mechanism.
+-- 
+1.9.1
+

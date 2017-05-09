@@ -1,0 +1,39 @@
+From 736d34de51965fef7740ef1de715b72b7528d37b Mon Sep 17 00:00:00 2001
+From: Aaron Lehmann <aaron.lehmann@docker.com>
+Date: Wed, 30 Mar 2016 19:34:51 -0700
+Subject: [PATCH 35/41] BACKPORT: Fix layer store Get locking
+
+Upstream reference: https://github.com/docker/docker/pull/21677
+
+Get was calling getReference without layerL held. This meant writes to
+the references map could race. Such races are dangerous because they can
+corrupt the map and crash the process.
+
+Fixes #21616
+Fixes #21674
+
+Signed-off-by: Aaron Lehmann <aaron.lehmann@docker.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ layer/layer_store.go | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/layer/layer_store.go b/layer/layer_store.go
+index 229ba6a..102853c 100644
+--- a/layer/layer_store.go
++++ b/layer/layer_store.go
+@@ -334,7 +334,10 @@ func (ls *layerStore) get(l ChainID) *roLayer {
+ }
+ 
+ func (ls *layerStore) Get(l ChainID) (Layer, error) {
+-	layer := ls.get(l)
++	ls.layerL.Lock()
++	defer ls.layerL.Unlock()
++
++	layer := ls.getWithoutLock(l)
+ 	if layer == nil {
+ 		return nil, ErrLayerDoesNotExist
+ 	}
+-- 
+1.9.1
+

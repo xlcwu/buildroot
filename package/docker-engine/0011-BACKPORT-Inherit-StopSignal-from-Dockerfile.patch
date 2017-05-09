@@ -1,0 +1,81 @@
+From b939f6f55f019a2d8af54811e9984da3a61f44ee Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Tue, 12 Apr 2016 10:00:43 +0200
+Subject: [PATCH 11/41] BACKPORT: Inherit StopSignal from Dockerfile.
+
+Upstream reference:
+https://github.com/docker/docker/pull/20290/commits/a252516ec19c9c83055a882da894712f2e812ecc
+
+Make sure the image configuration is not overriden by the default
+value in the `create` flag.
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/commit.go                         |  3 +++
+ integration-cli/docker_cli_build_test.go | 13 ++++++++++---
+ runconfig/opts/parse.go                  |  5 ++++-
+ 3 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/daemon/commit.go b/daemon/commit.go
+index d0c4924..84a623f 100644
+--- a/daemon/commit.go
++++ b/daemon/commit.go
+@@ -89,6 +89,9 @@ func merge(userConf, imageConf *containertypes.Config) error {
+ 			userConf.Volumes[k] = v
+ 		}
+ 	}
++	if userConf.StopSignal == "" {
++		userConf.StopSignal = imageConf.StopSignal
++	}
+ 	return nil
+ }
+ 
+diff --git a/integration-cli/docker_cli_build_test.go b/integration-cli/docker_cli_build_test.go
+index b5bd1d7..e01ce65 100644
+--- a/integration-cli/docker_cli_build_test.go
++++ b/integration-cli/docker_cli_build_test.go
+@@ -5891,15 +5891,22 @@ func (s *DockerSuite) TestBuildNullStringInAddCopyVolume(c *check.C) {
+ 
+ func (s *DockerSuite) TestBuildStopSignal(c *check.C) {
+ 	testRequires(c, DaemonIsLinux)
+-	name := "test_build_stop_signal"
+-	_, err := buildImage(name,
++	imgName := "test_build_stop_signal"
++	_, err := buildImage(imgName,
+ 		`FROM busybox
+ 		 STOPSIGNAL SIGKILL`,
+ 		true)
+ 	c.Assert(err, check.IsNil)
+-	res, err := inspectFieldJSON(name, "Config.StopSignal")
++	res, err := inspectFieldJSON(imgName, "Config.StopSignal")
+ 	c.Assert(err, check.IsNil)
++	if res != `"SIGKILL"` {
++		c.Fatalf("Signal %s, expected SIGKILL", res)
++	}
+ 
++	containerName := "test-container-stop-signal"
++	dockerCmd(c, "run", "-d", "--name", containerName, imgName, "top")
++	res, err = inspectFieldJSON(containerName, "Config.StopSignal")
++	c.Assert(err, check.IsNil)
+ 	if res != `"SIGKILL"` {
+ 		c.Fatalf("Signal %s, expected SIGKILL", res)
+ 	}
+diff --git a/runconfig/opts/parse.go b/runconfig/opts/parse.go
+index 41cb377..b523b06 100644
+--- a/runconfig/opts/parse.go
++++ b/runconfig/opts/parse.go
+@@ -375,7 +375,10 @@ func Parse(cmd *flag.FlagSet, args []string) (*container.Config, *container.Host
+ 		Entrypoint:      entrypoint,
+ 		WorkingDir:      *flWorkingDir,
+ 		Labels:          ConvertKVStringsToMap(labels),
+-		StopSignal:      *flStopSignal,
++	}
++
++	if cmd.IsSet("-stop-signal") {
++		config.StopSignal = *flStopSignal
+ 	}
+ 
+ 	hostConfig := &container.HostConfig{
+-- 
+1.9.1
+

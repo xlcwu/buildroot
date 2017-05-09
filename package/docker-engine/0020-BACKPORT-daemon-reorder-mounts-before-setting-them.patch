@@ -1,0 +1,79 @@
+From 0fa5861946767400ab0cbdf7a72a47791d6b90d9 Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Tue, 26 Apr 2016 10:20:17 +0200
+Subject: [PATCH 20/41] BACKPORT: daemon: reorder mounts before setting them
+
+Upstream reference: https://github.com/docker/docker/pull/22329
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/start.go                             | 10 ++++++----
+ integration-cli/docker_cli_run_unix_test.go | 12 +++++++++---
+ 2 files changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/daemon/start.go b/daemon/start.go
+index 418dace..d037165 100644
+--- a/daemon/start.go
++++ b/daemon/start.go
+@@ -2,6 +2,7 @@ package daemon
+ 
+ import (
+ 	"runtime"
++	"sort"
+ 
+ 	"github.com/Sirupsen/logrus"
+ 	"github.com/docker/docker/container"
+@@ -134,14 +135,15 @@ func (daemon *Daemon) containerStart(container *container.Container) (err error)
+ 		}
+ 	}
+ 
+-	mounts, err := daemon.setupMounts(container)
++	ms, err := daemon.setupMounts(container)
+ 	if err != nil {
+ 		return err
+ 	}
+-	mounts = append(mounts, container.IpcMounts()...)
+-	mounts = append(mounts, container.TmpfsMounts()...)
++	ms = append(ms, container.IpcMounts()...)
++	ms = append(ms, container.TmpfsMounts()...)
++	sort.Sort(mounts(ms))
++	container.Command.Mounts = ms
+ 
+-	container.Command.Mounts = mounts
+ 	if err := daemon.waitForStart(container); err != nil {
+ 		return err
+ 	}
+diff --git a/integration-cli/docker_cli_run_unix_test.go b/integration-cli/docker_cli_run_unix_test.go
+index 9ffc92d..71be5ff 100644
+--- a/integration-cli/docker_cli_run_unix_test.go
++++ b/integration-cli/docker_cli_run_unix_test.go
+@@ -704,6 +704,14 @@ func (s *DockerSuite) TestRunWithShmSize(c *check.C) {
+ 	c.Assert(shmSize, check.Equals, "1073741824")
+ }
+ 
++func (s *DockerSuite) TestRunTmpfsMountsEnsureOrdered(c *check.C) {
++	tmpFile, err := ioutil.TempFile("", "test")
++	c.Assert(err, check.IsNil)
++	defer tmpFile.Close()
++	out, _ := dockerCmd(c, "run", "--tmpfs", "/run", "-v", tmpFile.Name()+":/run/test", "busybox", "ls", "/run")
++	c.Assert(out, checker.Contains, "test")
++}
++
+ func (s *DockerSuite) TestRunTmpfsMounts(c *check.C) {
+ 	// TODO Windows (Post TP4): This test cannot run on a Windows daemon as
+ 	// Windows does not support tmpfs mounts.
+@@ -766,10 +774,8 @@ func (s *DockerSuite) TestRunSeccompProfileDenyChmod(c *check.C) {
+ 	]
+ }`
+ 	tmpFile, err := ioutil.TempFile("", "profile.json")
++	c.Assert(err, check.IsNil)
+ 	defer tmpFile.Close()
+-	if err != nil {
+-		c.Fatal(err)
+-	}
+ 
+ 	if _, err := tmpFile.Write([]byte(jsonData)); err != nil {
+ 		c.Fatal(err)
+-- 
+1.9.1
+

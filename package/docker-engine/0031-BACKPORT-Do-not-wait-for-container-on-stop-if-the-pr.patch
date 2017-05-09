@@ -1,0 +1,95 @@
+From b18626263ecda3d8122182faddfd97bba4600461 Mon Sep 17 00:00:00 2001
+From: David Calavera <david.calavera@gmail.com>
+Date: Fri, 4 Mar 2016 15:41:06 -0500
+Subject: [PATCH 31/41] BACKPORT: Do not wait for container on stop if the
+ process doesn't exist.
+
+Upstream reference: https://github.com/docker/docker/pull/20967
+
+This fixes an issue that caused the client to hang forever if the
+process died before the code arrived to exit the `Kill` function.
+
+Signed-off-by: David Calavera <david.calavera@gmail.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/container_operations_unix.go |  4 +++-
+ daemon/kill.go                      | 27 +++++++++++++++++++++++++--
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/container_operations_unix.go b/daemon/container_operations_unix.go
+index 56c3789..f6d5d02 100644
+--- a/daemon/container_operations_unix.go
++++ b/daemon/container_operations_unix.go
+@@ -1107,7 +1107,9 @@ func killProcessDirectly(container *container.Container) error {
+ 				if err != syscall.ESRCH {
+ 					return err
+ 				}
+-				logrus.Debugf("Cannot kill process (pid=%d) with signal 9: no such process.", pid)
++				e := errNoSuchProcess{pid, 9}
++				logrus.Debug(e)
++				return e
+ 			}
+ 		}
+ 	}
+diff --git a/daemon/kill.go b/daemon/kill.go
+index 0f96222..8bf3d68 100644
+--- a/daemon/kill.go
++++ b/daemon/kill.go
+@@ -12,6 +12,22 @@ import (
+ 	"github.com/docker/docker/pkg/signal"
+ )
+ 
++type errNoSuchProcess struct {
++	pid    int
++	signal int
++}
++
++func (e errNoSuchProcess) Error() string {
++	return fmt.Sprintf("Cannot kill process (pid=%d) with signal %d: no such process.", e.pid, e.signal)
++}
++
++// isErrNoSuchProcess returns true if the error
++// is an instance of errNoSuchProcess.
++func isErrNoSuchProcess(err error) bool {
++	_, ok := err.(errNoSuchProcess)
++	return ok
++}
++
+ // ContainerKill send signal to the container
+ // If no signal is given (sig 0), then Kill with SIGKILL and wait
+ // for the container to exit.
+@@ -87,6 +103,9 @@ func (daemon *Daemon) Kill(container *container.Container) error {
+ 		// So, instead we'll give it up to 2 more seconds to complete and if
+ 		// by that time the container is still running, then the error
+ 		// we got is probably valid and so we return it to the caller.
++		if isErrNoSuchProcess(err) {
++			return nil
++		}
+ 
+ 		if container.IsRunning() {
+ 			container.WaitStop(2 * time.Second)
+@@ -98,6 +117,9 @@ func (daemon *Daemon) Kill(container *container.Container) error {
+ 
+ 	// 2. Wait for the process to die, in last resort, try to kill the process directly
+ 	if err := killProcessDirectly(container); err != nil {
++		if isErrNoSuchProcess(err) {
++			return nil
++		}
+ 		return err
+ 	}
+ 
+@@ -109,8 +131,9 @@ func (daemon *Daemon) Kill(container *container.Container) error {
+ func (daemon *Daemon) killPossiblyDeadProcess(container *container.Container, sig int) error {
+ 	err := daemon.killWithSignal(container, sig)
+ 	if err == syscall.ESRCH {
+-		logrus.Debugf("Cannot kill process (pid=%d) with signal %d: no such process.", container.GetPID(), sig)
+-		return nil
++		e := errNoSuchProcess{container.GetPID(), sig}
++		logrus.Debug(e)
++		return e
+ 	}
+ 	return err
+ }
+-- 
+1.9.1
+

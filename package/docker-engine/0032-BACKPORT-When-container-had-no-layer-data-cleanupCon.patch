@@ -1,0 +1,39 @@
+From 814fd6fb4388b0f91690ac8496668541893d0b76 Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Tue, 7 Jun 2016 10:40:04 +0200
+Subject: [PATCH 32/41] BACKPORT: When container had no layer data,
+ cleanupContainer crashed
+
+Upstream ref: https://github.com/docker/docker/pull/21802
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/delete.go | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/daemon/delete.go b/daemon/delete.go
+index a086aed..625ba92 100644
+--- a/daemon/delete.go
++++ b/daemon/delete.go
+@@ -126,10 +126,14 @@ func (daemon *Daemon) cleanupContainer(container *container.Container, forceRemo
+ 		return derr.ErrorCodeRmFS.WithArgs(container.ID, err)
+ 	}
+ 
+-	metadata, err := daemon.layerStore.ReleaseRWLayer(container.RWLayer)
+-	layer.LogReleaseMetadata(metadata)
+-	if err != nil && err != layer.ErrMountDoesNotExist {
+-		return derr.ErrorCodeRmDriverFS.WithArgs(daemon.GraphDriverName(), container.ID, err)
++	// When container creation fails and `RWLayer` has not been created yet, we
++	// do not call `ReleaseRWLayer`
++	if container.RWLayer != nil {
++		metadata, err := daemon.layerStore.ReleaseRWLayer(container.RWLayer)
++		layer.LogReleaseMetadata(metadata)
++		if err != nil && err != layer.ErrMountDoesNotExist {
++			return derr.ErrorCodeRmDriverFS.WithArgs(daemon.GraphDriverName(), container.ID, err)
++		}
+ 	}
+ 
+ 	if err = daemon.execDriver.Clean(container.ID); err != nil {
+-- 
+1.9.1
+

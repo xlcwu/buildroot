@@ -1,0 +1,46 @@
+From 641a40a2974f7136b667976c6c6619a4190c751c Mon Sep 17 00:00:00 2001
+From: Aleksa Sarai <asarai@suse.de>
+Date: Wed, 16 Mar 2016 22:54:57 +1100
+Subject: [PATCH 33/41] BACKPORT: pkg: archive: don't fail Untar if xattrs are
+ not supported
+
+Upstream reference: https://github.com/docker/docker/pull/21251
+
+Since certain filesystems don't support extended attributes, ignore
+errors produced (emitting a warning) when attempting to apply extended
+attributes to file.
+
+Signed-off-by: Aleksa Sarai <asarai@suse.de>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ pkg/archive/archive.go | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/pkg/archive/archive.go b/pkg/archive/archive.go
+index 1281683..f48d821 100644
+--- a/pkg/archive/archive.go
++++ b/pkg/archive/archive.go
+@@ -425,10 +425,19 @@ func createTarFile(path, extractDir string, hdr *tar.Header, reader io.Reader, L
+ 		}
+ 	}
+ 
++	var errors []string
+ 	for key, value := range hdr.Xattrs {
+ 		if err := system.Lsetxattr(path, key, []byte(value), 0); err != nil {
+-			return err
++			// We ignore errors here because not all graphdrivers support xattrs.
++			errors = append(errors, err.Error())
+ 		}
++
++	}
++
++	if len(errors) > 0 {
++		logrus.WithFields(logrus.Fields{
++			"errors": errors,
++		}).Warn("ignored xattrs in archive: underlying filesystem doesn't support them")
+ 	}
+ 
+ 	// There is no LChmod, so ignore mode for symlink. Also, this
+-- 
+1.9.1
+

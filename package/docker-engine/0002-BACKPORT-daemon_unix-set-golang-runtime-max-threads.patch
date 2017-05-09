@@ -1,0 +1,93 @@
+From a7623bc6308528f4d6f110e8e563a4c3a092d0e8 Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Wed, 2 Dec 2015 11:26:30 +0100
+Subject: [PATCH 02/41] BACKPORT: daemon_unix: set golang runtime max threads
+
+Upstream reference:
+https://github.com/docker/docker/commit/140a74347d7fde130598aeca028b72af99737239
+
+SetMaxThreads from runtime/debug in Golang is called to set max threads
+value to 90% of /proc/sys/kernel/threads-max
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/daemon.go         |  4 ++++
+ daemon/daemon_unix.go    | 19 +++++++++++++++++++
+ daemon/daemon_windows.go |  5 +++++
+ 3 files changed, 28 insertions(+)
+
+diff --git a/daemon/daemon.go b/daemon/daemon.go
+index 6cb7f8c..4339f45 100644
+--- a/daemon/daemon.go
++++ b/daemon/daemon.go
+@@ -671,6 +671,10 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
+ 	}
+ 	logrus.Debugf("Using default logging driver %s", config.LogConfig.Type)
+ 
++	if err := configureMaxThreads(config); err != nil {
++		logrus.Warnf("Failed to configure golang's threads limit: %v", err)
++	}
++
+ 	daemonRepo := filepath.Join(config.Root, "containers")
+ 	if err := idtools.MkdirAllAs(daemonRepo, 0700, rootUID, rootGID); err != nil && !os.IsExist(err) {
+ 		return nil, err
+diff --git a/daemon/daemon_unix.go b/daemon/daemon_unix.go
+index cfa9ef1..e5aecc3 100644
+--- a/daemon/daemon_unix.go
++++ b/daemon/daemon_unix.go
+@@ -4,10 +4,12 @@ package daemon
+ 
+ import (
+ 	"fmt"
++	"io/ioutil"
+ 	"net"
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"runtime/debug"
+ 	"strconv"
+ 	"strings"
+ 	"syscall"
+@@ -463,6 +465,23 @@ func checkSystem() error {
+ 	return checkKernel()
+ }
+ 
++// configureMaxThreads sets the Go runtime max threads threshold
++// which is 90% of the kernel setting from /proc/sys/kernel/threads-max
++func configureMaxThreads(config *Config) error {
++	mt, err := ioutil.ReadFile("/proc/sys/kernel/threads-max")
++	if err != nil {
++		return err
++	}
++	mtint, err := strconv.Atoi(strings.TrimSpace(string(mt)))
++	if err != nil {
++		return err
++	}
++	maxThreads := (mtint / 100) * 90
++	debug.SetMaxThreads(maxThreads)
++	logrus.Debugf("Golang's threads limit set to %d", maxThreads)
++	return nil
++}
++
+ // configureKernelSecuritySupport configures and validate security support for the kernel
+ func configureKernelSecuritySupport(config *Config, driverName string) error {
+ 	if config.EnableSelinuxSupport {
+diff --git a/daemon/daemon_windows.go b/daemon/daemon_windows.go
+index e5db1a8..2491caf 100644
+--- a/daemon/daemon_windows.go
++++ b/daemon/daemon_windows.go
+@@ -115,6 +115,11 @@ func configureKernelSecuritySupport(config *Config, driverName string) error {
+ 	return nil
+ }
+ 
++// configureMaxThreads sets the Go runtime max threads threshold
++func configureMaxThreads(config *Config) error {
++	return nil
++}
++
+ func isBridgeNetworkDisabled(config *Config) bool {
+ 	return false
+ }
+-- 
+1.9.1
+

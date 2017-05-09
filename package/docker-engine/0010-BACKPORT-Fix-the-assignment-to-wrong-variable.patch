@@ -1,0 +1,32 @@
+From 72bb5fcea3e7947c28f387919f2c544b0985df9c Mon Sep 17 00:00:00 2001
+From: Vivek Goyal <vgoyal@redhat.com>
+Date: Thu, 17 Mar 2016 15:19:08 +0000
+Subject: [PATCH 10/41] BACKPORT: Fix the assignment to wrong variable
+
+Upstream reference: https://github.com/docker/docker/pull/21295
+
+We should be assigning value to minFreeMetadata instead of minFreeData. This
+is copy/paste error.
+
+Signed-off-by: Vivek Goyal <vgoyal@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/graphdriver/devmapper/deviceset.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/daemon/graphdriver/devmapper/deviceset.go b/daemon/graphdriver/devmapper/deviceset.go
+index aedc4f7..3586c3e 100644
+--- a/daemon/graphdriver/devmapper/deviceset.go
++++ b/daemon/graphdriver/devmapper/deviceset.go
+@@ -776,7 +776,7 @@ func (devices *DeviceSet) poolHasFreeSpace() error {
+ 
+ 	minFreeMetadata := (metadataTotal * uint64(devices.minFreeSpacePercent)) / 100
+ 	if minFreeMetadata < 1 {
+-		minFreeData = 1
++		minFreeMetadata = 1
+ 	}
+ 
+ 	metadataFree := metadataTotal - metadataUsed
+-- 
+1.9.1
+

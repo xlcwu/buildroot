@@ -1,0 +1,33 @@
+From 7724c769f0b3ee67d5a7a30bc8f49276754e7f8d Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Tue, 7 Jun 2016 10:02:49 +0200
+Subject: [PATCH 28/41] BACKPORT: Fix pulling images that contain no layers at
+ all
+
+Upstream ref: https://github.com/docker/docker/pull/21222
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ distribution/xfer/download.go | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/distribution/xfer/download.go b/distribution/xfer/download.go
+index 69c8bad..a06076a 100644
+--- a/distribution/xfer/download.go
++++ b/distribution/xfer/download.go
+@@ -142,7 +142,11 @@ func (ldm *LayerDownloadManager) Download(ctx context.Context, initialRootFS ima
+ 	}
+ 
+ 	if topDownload == nil {
+-		return rootFS, func() { layer.ReleaseAndLog(ldm.layerStore, topLayer) }, nil
++		return rootFS, func() {
++			if topLayer != nil {
++				layer.ReleaseAndLog(ldm.layerStore, topLayer)
++			}
++		}, nil
+ 	}
+ 
+ 	// Won't be using the list built up so far - will generate it
+-- 
+1.9.1
+

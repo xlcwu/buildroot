@@ -1,0 +1,54 @@
+From eeabe8a2d47e7c1fbebe27cf6c31f3e61b0aca2f Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Wed, 20 Jul 2016 17:47:03 +0200
+Subject: [PATCH 40/41] BACKPORT: Synchronize writes to mcs map
+
+Upstream reference: https://github.com/opencontainers/runc/pull/735
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ .../github.com/opencontainers/runc/libcontainer/selinux/selinux.go  | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/selinux/selinux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/selinux/selinux.go
+index 2771bb5..0e601c7 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/selinux/selinux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/selinux/selinux.go
+@@ -13,6 +13,7 @@ import (
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 
+ 	"github.com/docker/docker/pkg/mount"
+@@ -35,6 +36,7 @@ const (
+ var (
+ 	assignRegex           = regexp.MustCompile(`^([^=]+)=(.*)$`)
+ 	mcsList               = make(map[string]bool)
++	mcsLock               sync.Mutex
+ 	selinuxfs             = "unknown"
+ 	selinuxEnabled        = false // Stores whether selinux is currently enabled
+ 	selinuxEnabledChecked = false // Stores whether selinux enablement has been checked or established yet
+@@ -257,6 +259,8 @@ func SelinuxGetEnforceMode() int {
+ }
+ 
+ func mcsAdd(mcs string) error {
++	mcsLock.Lock()
++	defer mcsLock.Unlock()
+ 	if mcsList[mcs] {
+ 		return fmt.Errorf("MCS Label already exists")
+ 	}
+@@ -265,7 +269,9 @@ func mcsAdd(mcs string) error {
+ }
+ 
+ func mcsDelete(mcs string) {
++	mcsLock.Lock()
+ 	mcsList[mcs] = false
++	mcsLock.Unlock()
+ }
+ 
+ func IntToMcs(id int, catRange uint32) string {
+-- 
+1.9.1
+

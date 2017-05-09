@@ -1,0 +1,51 @@
+From a6d1130a4417b9588a6294a447c94284906813ae Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Tue, 7 Jun 2016 10:30:24 +0200
+Subject: [PATCH 29/41] BACKPORT: Fix plugin file descriptor leaks
+
+Upstream ref: https://github.com/docker/docker/pull/20686
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ pkg/plugins/plugins.go | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/pkg/plugins/plugins.go b/pkg/plugins/plugins.go
+index 7157107..738686e 100644
+--- a/pkg/plugins/plugins.go
++++ b/pkg/plugins/plugins.go
+@@ -199,17 +199,27 @@ func GetAll(imp string) ([]*Plugin, error) {
+ 		err error
+ 	}
+ 
+-	chPl := make(chan plLoad, len(pluginNames))
++	chPl := make(chan *plLoad, len(pluginNames))
++	var wg sync.WaitGroup
+ 	for _, name := range pluginNames {
++		if pl, ok := storage.plugins[name]; ok {
++			chPl <- &plLoad{pl, nil}
++			continue
++		}
++
++		wg.Add(1)
+ 		go func(name string) {
++			defer wg.Done()
+ 			pl, err := loadWithRetry(name, false)
+-			chPl <- plLoad{pl, err}
++			chPl <- &plLoad{pl, err}
+ 		}(name)
+ 	}
+ 
++	wg.Wait()
++	close(chPl)
++
+ 	var out []*Plugin
+-	for i := 0; i < len(pluginNames); i++ {
+-		pl := <-chPl
++	for pl := range chPl {
+ 		if pl.err != nil {
+ 			logrus.Error(err)
+ 			continue
+-- 
+1.9.1
+

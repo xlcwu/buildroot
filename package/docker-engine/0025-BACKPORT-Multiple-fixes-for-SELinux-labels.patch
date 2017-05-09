@@ -1,0 +1,88 @@
+From 398b69f6520fbb16dff380d5b9b0eeb5657adb78 Mon Sep 17 00:00:00 2001
+From: Dan Walsh <dwalsh@redhat.com>
+Date: Wed, 25 May 2016 15:57:10 -0400
+Subject: [PATCH 25/41] BACKPORT: Multiple fixes for SELinux labels.
+
+Upstream reference: https://github.com/docker/docker/pull/22993
+
+SELinux labeling should be disabled when using --privileged mode
+
+/etc/hosts, /etc/resolv.conf, /etc/hostname should not be relabeled if they
+are volume mounted into the container.
+
+Signed-off-by: Dan Walsh <dwalsh@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ container/container_unix.go | 12 +++++++++---
+ daemon/create.go            |  4 ++--
+ daemon/daemon_unix.go       |  2 +-
+ 3 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/container/container_unix.go b/container/container_unix.go
+index b8bae23..f0fc453 100644
+--- a/container/container_unix.go
++++ b/container/container_unix.go
+@@ -449,7 +449,9 @@ func (container *Container) NetworkMounts() []execdriver.Mount {
+ 		if _, err := os.Stat(container.ResolvConfPath); err != nil {
+ 			logrus.Warnf("ResolvConfPath set to %q, but can't stat this filename (err = %v); skipping", container.ResolvConfPath, err)
+ 		} else {
+-			label.Relabel(container.ResolvConfPath, container.MountLabel, shared)
++			if !container.HasMountFor("/etc/resolv.conf") {
++				label.Relabel(container.ResolvConfPath, container.MountLabel, shared)
++			}
+ 			writable := !container.HostConfig.ReadonlyRootfs
+ 			if m, exists := container.MountPoints["/etc/resolv.conf"]; exists {
+ 				writable = m.RW
+@@ -466,7 +468,9 @@ func (container *Container) NetworkMounts() []execdriver.Mount {
+ 		if _, err := os.Stat(container.HostnamePath); err != nil {
+ 			logrus.Warnf("HostnamePath set to %q, but can't stat this filename (err = %v); skipping", container.HostnamePath, err)
+ 		} else {
+-			label.Relabel(container.HostnamePath, container.MountLabel, shared)
++			if !container.HasMountFor("/etc/hostname") {
++				label.Relabel(container.HostnamePath, container.MountLabel, shared)
++			}
+ 			writable := !container.HostConfig.ReadonlyRootfs
+ 			if m, exists := container.MountPoints["/etc/hostname"]; exists {
+ 				writable = m.RW
+@@ -483,7 +487,9 @@ func (container *Container) NetworkMounts() []execdriver.Mount {
+ 		if _, err := os.Stat(container.HostsPath); err != nil {
+ 			logrus.Warnf("HostsPath set to %q, but can't stat this filename (err = %v); skipping", container.HostsPath, err)
+ 		} else {
+-			label.Relabel(container.HostsPath, container.MountLabel, shared)
++			if !container.HasMountFor("/etc/hosts") {
++				label.Relabel(container.HostsPath, container.MountLabel, shared)
++			}
+ 			writable := !container.HostConfig.ReadonlyRootfs
+ 			if m, exists := container.MountPoints["/etc/hosts"]; exists {
+ 				writable = m.RW
+diff --git a/daemon/create.go b/daemon/create.go
+index 166af3b..70bb182 100644
+--- a/daemon/create.go
++++ b/daemon/create.go
+@@ -131,8 +131,8 @@ func (daemon *Daemon) create(params types.ContainerCreateConfig) (retC *containe
+ 	return container, nil
+ }
+ 
+-func (daemon *Daemon) generateSecurityOpt(ipcMode containertypes.IpcMode, pidMode containertypes.PidMode) ([]string, error) {
+-	if ipcMode.IsHost() || pidMode.IsHost() {
++func (daemon *Daemon) generateSecurityOpt(ipcMode containertypes.IpcMode, pidMode containertypes.PidMode, privileged bool) ([]string, error) {
++	if ipcMode.IsHost() || pidMode.IsHost() || privileged {
+ 		return label.DisableSecOpt(), nil
+ 	}
+ 	if ipcContainer := ipcMode.Container(); ipcContainer != "" {
+diff --git a/daemon/daemon_unix.go b/daemon/daemon_unix.go
+index e5aecc3..31871bf 100644
+--- a/daemon/daemon_unix.go
++++ b/daemon/daemon_unix.go
+@@ -204,7 +204,7 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
+ 	}
+ 	var err error
+ 	if hostConfig.SecurityOpt == nil {
+-		hostConfig.SecurityOpt, err = daemon.generateSecurityOpt(hostConfig.IpcMode, hostConfig.PidMode)
++		hostConfig.SecurityOpt, err = daemon.generateSecurityOpt(hostConfig.IpcMode, hostConfig.PidMode, hostConfig.Privileged)
+ 		if err != nil {
+ 			return err
+ 		}
+-- 
+1.9.1
+

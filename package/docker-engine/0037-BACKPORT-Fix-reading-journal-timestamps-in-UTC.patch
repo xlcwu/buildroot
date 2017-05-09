@@ -1,0 +1,38 @@
+From e6c4f3040a445e42f986fbbc3faf29a3e90f5b7a Mon Sep 17 00:00:00 2001
+From: Nalin Dahyabhai <nalin@redhat.com>
+Date: Thu, 14 Apr 2016 15:21:42 -0400
+Subject: [PATCH 37/41] BACKPORT: Fix reading journal timestamps in UTC
+
+Upstream reference: https://github.com/docker/docker/pull/23136
+
+When reading entries in the journald log reader, set the time zone on
+timestamps that we read to UTC, so that we send UTC values to the client
+instead of values that are local to whatever timezone dockerd happens to
+be running in.
+
+Signed-off-by: Nalin Dahyabhai <nalin@redhat.com> (github: nalind)
+---
+ daemon/logger/journald/read.go | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/daemon/logger/journald/read.go b/daemon/logger/journald/read.go
+index 52a45d4..176db6b 100644
+--- a/daemon/logger/journald/read.go
++++ b/daemon/logger/journald/read.go
+@@ -166,7 +166,12 @@ drain:
+ 			}
+ 			// Send the log message.
+ 			cid := s.vars["CONTAINER_ID_FULL"]
+-			logWatcher.Msg <- &logger.Message{ContainerID: cid, Line: line, Source: source, Timestamp: timestamp}
++			logWatcher.Msg <- &logger.Message{
++				ContainerID: cid,
++				Line:        line,
++				Source:      source,
++				Timestamp:   timestamp.In(time.UTC),
++			}
+ 		}
+ 		// If we're at the end of the journal, we're done (for now).
+ 		if C.sd_journal_next(j) <= 0 {
+-- 
+1.9.1
+

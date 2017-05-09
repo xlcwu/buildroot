@@ -1,0 +1,98 @@
+From f96d1b8dbc1db804304d71be2b5a49cb6d9f195d Mon Sep 17 00:00:00 2001
+From: Vivek Goyal <vgoyal@redhat.com>
+Date: Wed, 13 Apr 2016 18:22:41 +0000
+Subject: [PATCH 16/41] BACKPORT: Mount volumes rprivate for archival and other
+ use cases
+
+Upstream reference: https://github.com/docker/docker/pull/22009
+
+People have reported following problem.
+
+- docker run -ti --name=foo -v /dev/:/dev/ fedora bash
+- docker cp foo:/bin/bash /tmp
+
+Once the cp operation is complete, it unmounted /dev/pts on the host. /dev/pts
+is a submount of /dev/. This is completely unexpected. Following is the
+reson for this behavior.
+
+containerArchivePath() call mountVolumes() which goes through all the mounts
+points of a container and mounts them in daemon mount namespace in
+/var/lib/docker/devicemapper/mnt/<containerid>/rootfs dir. And once we have
+extracted the data required, these are unmounted using UnmountVolumes().
+
+Mounts are done using recursive bind (rbind). And these are unmounted using
+lazy mount option on top level mount. (detachMounted()). That means if there
+are submounts under top level mounts, these mount events will propagate and
+they were "shared" mounts with host, it will unmount the submount on host
+as well.
+
+For example, try following.
+
+- Prepare a parent and child mount point.
+  $ mkdir /root/foo
+  $ mount --bind /root/foo /root/foo
+  $ mount --make-rshared /root/foo
+
+- Prepare a child mount
+
+  $ mkdir /root/foo/foo1
+  $ mount --bind /root/foo/foo1 /root/foo/foo1
+
+- Bind mount foo at bar
+
+  $ mkdir /root/bar
+  $ mount --rbind /root/foo /root/bar
+
+- Now lazy unmount /root/bar and it will unmount /root/foo/foo1 as well.
+
+  $ umount -l /root/bar
+
+This is not unintended. We just wanted to unmount /root/bar and anything
+underneath but did not have intentions of unmounting anything on source.
+
+So far this was not a problem as docker daemon was running in a seprate
+mount namespace where all propagation was "slave". That means any unmounts
+in docker daemon namespace did not propagate to host namespace.
+
+But now we are running docker daemon in host namespace so that it is possible
+to mount some volumes "shared" with container. So that if container mounts
+something it propagates to host namespace as well.
+
+Given mountVolumes() seems to be doing only temporary mounts to read some
+data, there does not seem to be a need to mount these shared/slave. Just
+mount these private so that on unmount, nothing propagates and does not
+have unintended consequences.
+
+Signed-off-by: Vivek Goyal <vgoyal@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/container_operations_unix.go | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/daemon/container_operations_unix.go b/daemon/container_operations_unix.go
+index a96e394..b1d93ce 100644
+--- a/daemon/container_operations_unix.go
++++ b/daemon/container_operations_unix.go
+@@ -1079,6 +1079,19 @@ func (daemon *Daemon) mountVolumes(container *container.Container) error {
+ 		if err := mount.Mount(m.Source, dest, "bind", opts); err != nil {
+ 			return err
+ 		}
++
++		// mountVolumes() seems to be called for temporary mounts
++		// outside the container. Soon these will be unmounted with
++		// lazy unmount option and given we have mounted the rbind,
++		// all the submounts will propagate if these are shared. If
++		// daemon is running in host namespace and has / as shared
++		// then these unmounts will propagate and unmount original
++		// mount as well. So make all these mounts rprivate.
++		// Do not use propagation property of volume as that should
++		// apply only when mounting happen inside the container.
++		if err := mount.MakeRPrivate(dest); err != nil {
++			return err
++		}
+ 	}
+ 
+ 	return nil
+-- 
+1.9.1
+

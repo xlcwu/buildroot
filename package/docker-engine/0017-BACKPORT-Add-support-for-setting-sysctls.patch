@@ -1,0 +1,415 @@
+From c4374aa050c8a94e3634de1c56c1564b78bb7dad Mon Sep 17 00:00:00 2001
+From: Dan Walsh <dwalsh@redhat.com>
+Date: Fri, 15 Apr 2016 14:41:28 -0400
+Subject: [PATCH 17/41] BACKPORT: Add support for setting sysctls
+
+Upstream reference: https://github.com/docker/docker/pull/19265
+
+This patch will allow users to specify namespace specific "kernel parameters"
+for running inside of a container.
+
+Signed-off-by: Dan Walsh <dwalsh@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ contrib/completion/bash/docker                     |  1 +
+ contrib/completion/zsh/_docker                     |  1 +
+ daemon/container_operations_unix.go                |  1 +
+ daemon/execdriver/driver_unix.go                   |  1 +
+ daemon/execdriver/native/create.go                 |  1 +
+ docs/reference/api/docker_remote_api.md            |  1 +
+ docs/reference/api/docker_remote_api_v1.21.md      |  8 +++++
+ docs/reference/commandline/create.md               |  1 +
+ docs/reference/commandline/run.md                  | 28 ++++++++++++++++++
+ integration-cli/docker_cli_run_unix_test.go        | 34 ++++++++++++++++++++++
+ man/docker-create.1.md                             | 16 ++++++++++
+ man/docker-run.1.md                                | 33 +++++++++++++++++++++
+ opts/opts.go                                       | 32 ++++++++++++++++++++
+ runconfig/opts/parse.go                            |  3 ++
+ .../engine-api/types/container/host_config.go      |  2 +-
+ 15 files changed, 162 insertions(+), 1 deletion(-)
+
+diff --git a/contrib/completion/bash/docker b/contrib/completion/bash/docker
+index c5049a8..1f5d67b 100644
+--- a/contrib/completion/bash/docker
++++ b/contrib/completion/bash/docker
+@@ -1606,6 +1606,7 @@ _docker_run() {
+ 		--shm-size
+ 		--stop-signal
+ 		--tmpfs
++		--sysctl
+ 		--ulimit
+ 		--user -u
+ 		--uts
+diff --git a/contrib/completion/zsh/_docker b/contrib/completion/zsh/_docker
+index 25be25e..1dd3c46 100644
+--- a/contrib/completion/zsh/_docker
++++ b/contrib/completion/zsh/_docker
+@@ -538,6 +538,7 @@ __docker_subcommand() {
+         "($help)--read-only[Mount the container's root filesystem as read only]"
+         "($help)--restart=[Restart policy]:restart policy:(no on-failure always unless-stopped)"
+         "($help)*--security-opt=[Security options]:security option: "
++        "($help)*--sysctl=-[sysctl options]:sysctl: "
+         "($help -t --tty)"{-t,--tty}"[Allocate a pseudo-tty]"
+         "($help -u --user)"{-u=,--user=}"[Username or UID]:user:_users"
+         "($help)--tmpfs[mount tmpfs]"
+diff --git a/daemon/container_operations_unix.go b/daemon/container_operations_unix.go
+index b1d93ce..56c3789 100644
+--- a/daemon/container_operations_unix.go
++++ b/daemon/container_operations_unix.go
+@@ -271,6 +271,7 @@ func (daemon *Daemon) populateCommand(c *container.Container, env []string) erro
+ 		SeccompProfile:     c.SeccompProfile,
+ 		UIDMapping:         uidMap,
+ 		UTS:                uts,
++		Sysctls:            c.HostConfig.Sysctls,
+ 	}
+ 	if c.HostConfig.CgroupParent != "" {
+ 		c.Command.CgroupParent = c.HostConfig.CgroupParent
+diff --git a/daemon/execdriver/driver_unix.go b/daemon/execdriver/driver_unix.go
+index 3ed3c81..6dbaef7 100644
+--- a/daemon/execdriver/driver_unix.go
++++ b/daemon/execdriver/driver_unix.go
+@@ -122,6 +122,7 @@ type Command struct {
+ 	ReadonlyRootfs     bool              `json:"readonly_rootfs"`
+ 	RemappedRoot       *User             `json:"remap_root"`
+ 	SeccompProfile     string            `json:"seccomp_profile"`
++	Sysctls            map[string]string `json:"sysctls"`
+ 	UIDMapping         []idtools.IDMap   `json:"uidmapping"`
+ 	UTS                *UTS              `json:"uts"`
+ }
+diff --git a/daemon/execdriver/native/create.go b/daemon/execdriver/native/create.go
+index e3f56d9..325bea1 100644
+--- a/daemon/execdriver/native/create.go
++++ b/daemon/execdriver/native/create.go
+@@ -74,6 +74,7 @@ func (d *Driver) createContainer(c *execdriver.Command, hooks execdriver.Hooks)
+ 			container.Seccomp = getDefaultSeccompProfile()
+ 		}
+ 	}
++	container.Sysctl = c.Sysctls
+ 	// add CAP_ prefix to all caps for new libcontainer update to match
+ 	// the spec format.
+ 	for i, s := range container.Capabilities {
+diff --git a/docs/reference/api/docker_remote_api.md b/docs/reference/api/docker_remote_api.md
+index a4b6e72..fb8357e 100644
+--- a/docs/reference/api/docker_remote_api.md
++++ b/docs/reference/api/docker_remote_api.md
+@@ -137,6 +137,7 @@ This section lists each version from latest to oldest.  Each listing includes a
+ 
+ [Docker Remote API v1.21](docker_remote_api_v1.21.md) documentation
+ 
++* `POST /containers/create` and `POST /containers/(id)/start` allow you to configure kernel parameters (sysctls) for use in the container.
+ * `GET /volumes` lists volumes from all volume drivers.
+ * `POST /volumes/create` to create a volume.
+ * `GET /volumes/(name)` get low-level information about a volume.
+diff --git a/docs/reference/api/docker_remote_api_v1.21.md b/docs/reference/api/docker_remote_api_v1.21.md
+index a1bcd62..40a41c3 100644
+--- a/docs/reference/api/docker_remote_api_v1.21.md
++++ b/docs/reference/api/docker_remote_api_v1.21.md
+@@ -204,6 +204,7 @@ Create a container
+              "RestartPolicy": { "Name": "", "MaximumRetryCount": 0 },
+              "NetworkMode": "bridge",
+              "Devices": [],
++             "Sysctls": { "net.ipv4.ip_forward": "1" },
+              "Ulimits": [{}],
+              "LogConfig": { "Type": "json-file", "Config": {} },
+              "SecurityOpt": [""],
+@@ -309,6 +310,10 @@ Json Parameters:
+     -   **Devices** - A list of devices to add to the container specified as a JSON object in the
+       form
+           `{ "PathOnHost": "/dev/deviceName", "PathInContainer": "/dev/deviceName", "CgroupPermissions": "mrw"}`
++    -   **Sysctls** - A list of kernel parameters (sysctls) to set in the container, specified as
++          `{ <name>: <Value> }`, for example:
++	  `{ "net.ipv4.ip_forward": "1" }`
++
+     -   **Ulimits** - A list of ulimits to set in the container, specified as
+           `{ "Name": <name>, "Soft": <soft limit>, "Hard": <hard limit> }`, for example:
+           `Ulimits: { "Name": "nofile", "Soft": 1024, "Hard": 2048 }`
+@@ -429,6 +434,9 @@ Return low-level information on the container `id`
+ 				"Type": "json-file"
+ 			},
+ 			"SecurityOpt": null,
++			"Sysctls": {
++			        "net.ipv4.ip_forward": "1"
++			},
+ 			"VolumesFrom": null,
+ 			"Ulimits": [{}],
+ 			"VolumeDriver": ""
+diff --git a/docs/reference/commandline/create.md b/docs/reference/commandline/create.md
+index ad23995..c52e523 100644
+--- a/docs/reference/commandline/create.md
++++ b/docs/reference/commandline/create.md
+@@ -80,6 +80,7 @@ Creates a new container.
+       --security-opt=[]             Security options
+       --stop-signal="SIGTERM"       Signal to stop a container
+       --shm-size=[]                 Size of `/dev/shm`. The format is `<number><unit>`. `number` must be greater than `0`.  Unit is optional and can be `b` (bytes), `k` (kilobytes), `m` (megabytes), or `g` (gigabytes). If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`.
++      --sysctl[=*[]*]]              Configure namespaced kernel parameters at runtime
+       -t, --tty                     Allocate a pseudo-TTY
+       -u, --user=""                 Username or UID
+       --ulimit=[]                   Ulimit options
+diff --git a/docs/reference/commandline/run.md b/docs/reference/commandline/run.md
+index dce1019..b205b9b 100644
+--- a/docs/reference/commandline/run.md
++++ b/docs/reference/commandline/run.md
+@@ -82,6 +82,7 @@ parent = "smn_cli"
+       --security-opt=[]             Security Options
+       --sig-proxy=true              Proxy received signals to the process
+       --stop-signal="SIGTERM"       Signal to stop a container
++      --sysctl[=*[]*]]              Configure namespaced kernel parameters at runtime
+       -t, --tty                     Allocate a pseudo-TTY
+       -u, --user=""                 Username or UID (format: <name|uid>[:<group|gid>])
+       --ulimit=[]                   Ulimit options
+@@ -607,3 +608,30 @@ If you have set the `--exec-opt isolation=hyperv` option on the Docker `daemon`,
+ $ docker run -d --isolation default busybox top
+ $ docker run -d --isolation hyperv busybox top
+ ```
++
++### Configure namespaced kernel parameters (sysctls) at runtime
++
++The `--sysctl` sets namespaced kernel parameters (sysctls) in the
++container. For example, to turn on IP forwarding in the containers
++network namespace, run this command:
++
++    $ docker run --sysctl net.ipv4.ip_forward=1 someimage
++
++
++> **Note**: Not all sysctls are namespaced. docker does not support changing sysctls
++> inside of a container that also modify the host system. As the kernel 
++> evolves we expect to see more sysctls become namespaced.
++
++#### Currently supported sysctls
++
++  `IPC Namespace`:
++
++  kernel.msgmax, kernel.msgmnb, kernel.msgmni, kernel.sem, kernel.shmall, kernel.shmmax, kernel.shmmni, kernel.shm_rmid_forced
++  Sysctls beginning with fs.mqueue.*
++
++  If you use the `--ipc=host` option these sysctls will not be allowed.
++
++  `Network Namespace`:
++      Sysctls beginning with net.*
++
++  If you use the `--net=host` option using these sysctls will not be allowed.
+diff --git a/integration-cli/docker_cli_run_unix_test.go b/integration-cli/docker_cli_run_unix_test.go
+index 15f0d52..9ffc92d 100644
+--- a/integration-cli/docker_cli_run_unix_test.go
++++ b/integration-cli/docker_cli_run_unix_test.go
+@@ -4,6 +4,7 @@ package main
+ 
+ import (
+ 	"bufio"
++	"encoding/json"
+ 	"fmt"
+ 	"io/ioutil"
+ 	"os"
+@@ -902,3 +903,36 @@ func (s *DockerSuite) TestRunApparmorProcDirectory(c *check.C) {
+ 		c.Fatalf("expected chmod 777 /proc/1/attr/current to fail, got %s: %v", out, err)
+ 	}
+ }
++
++func (s *DockerSuite) TestRunSysctls(c *check.C) {
++
++	testRequires(c, DaemonIsLinux)
++	var err error
++
++	out, _ := dockerCmd(c, "run", "--sysctl", "net.ipv4.ip_forward=1", "--name", "test", "busybox", "cat", "/proc/sys/net/ipv4/ip_forward")
++	c.Assert(strings.TrimSpace(out), check.Equals, "1")
++
++	out, err = inspectFieldJSON("test", "HostConfig.Sysctls")
++	c.Assert(err, check.IsNil)
++
++	sysctls := make(map[string]string)
++	err = json.Unmarshal([]byte(out), &sysctls)
++	c.Assert(err, check.IsNil)
++	c.Assert(sysctls["net.ipv4.ip_forward"], check.Equals, "1")
++
++	out, _ = dockerCmd(c, "run", "--sysctl", "net.ipv4.ip_forward=0", "--name", "test1", "busybox", "cat", "/proc/sys/net/ipv4/ip_forward")
++	c.Assert(strings.TrimSpace(out), check.Equals, "0")
++
++	out, err = inspectFieldJSON("test1", "HostConfig.Sysctls")
++	c.Assert(err, check.IsNil)
++
++	err = json.Unmarshal([]byte(out), &sysctls)
++	c.Assert(err, check.IsNil)
++	c.Assert(sysctls["net.ipv4.ip_forward"], check.Equals, "0")
++
++	runCmd := exec.Command(dockerBinary, "run", "--sysctl", "kernel.foobar=1", "--name", "test2", "busybox", "cat", "/proc/sys/kernel/foobar")
++	out, _, _ = runCommandWithOutput(runCmd)
++	if !strings.Contains(out, "invalid value") {
++		c.Fatalf("expected --sysctl to fail, got %s", out)
++	}
++}
+diff --git a/man/docker-create.1.md b/man/docker-create.1.md
+index a45eef7..8361ea7 100644
+--- a/man/docker-create.1.md
++++ b/man/docker-create.1.md
+@@ -64,6 +64,7 @@ docker-create - Create a new container
+ [**--security-opt**[=*[]*]]
+ [**--stop-signal**[=*SIGNAL*]]
+ [**--shm-size**[=*[]*]]
++[**--sysctl**[=*[]*]]
+ [**-t**|**--tty**]
+ [**--tmpfs**[=*[CONTAINER-DIR[:<OPTIONS>]*]]
+ [**-u**|**--user**[=*USER*]]
+@@ -310,6 +311,21 @@ unit, `b` is used. Set LIMIT to `-1` to enable unlimited swap.
+ **--stop-signal**=*SIGTERM*
+   Signal to stop a container. Default is SIGTERM.
+ 
++**--sysctl**=SYSCTL
++  Configure namespaced kernel parameters at runtime
++
++  IPC Namespace - current sysctls allowed:
++
++  kernel.msgmax, kernel.msgmnb, kernel.msgmni, kernel.sem, kernel.shmall, kernel.shmmax, kernel.shmmni, kernel.shm_rmid_forced
++  Sysctls beginning with fs.mqueue.*
++
++  Note: if you use --ipc=host using these sysctls will not be allowed.
++
++  Network Namespace - current sysctls allowed:
++      Sysctls beginning with net.*
++
++  Note: if you use --net=host using these sysctls will not be allowed.
++
+ **-t**, **--tty**=*true*|*false*
+    Allocate a pseudo-TTY. The default is *false*.
+ 
+diff --git a/man/docker-run.1.md b/man/docker-run.1.md
+index 210343e..110385c 100644
+--- a/man/docker-run.1.md
++++ b/man/docker-run.1.md
+@@ -68,6 +68,7 @@ docker-run - Run a command in a new container
+ [**--stop-signal**[=*SIGNAL*]]
+ [**--shm-size**[=*[]*]]
+ [**--sig-proxy**[=*true*]]
++[**--sysctl**[=*[]*]]
+ [**-t**|**--tty**]
+ [**--tmpfs**[=*[CONTAINER-DIR[:<OPTIONS>]*]]
+ [**-u**|**--user**[=*USER*]]
+@@ -468,6 +469,21 @@ its root filesystem mounted as read only prohibiting any writes.
+    `number` must be greater than `0`.  Unit is optional and can be `b` (bytes), `k` (kilobytes), `m`(megabytes), or `g` (gigabytes).
+    If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`.
+ 
++**--sysctl**=SYSCTL
++  Configure namespaced kernel parameters at runtime
++
++  IPC Namespace - current sysctls allowed:
++
++  kernel.msgmax, kernel.msgmnb, kernel.msgmni, kernel.sem, kernel.shmall, kernel.shmmax, kernel.shmmni, kernel.shm_rmid_forced
++  Sysctls beginning with fs.mqueue.*
++
++  If you use the `--ipc=host` option these sysctls will not be allowed.
++
++  Network Namespace - current sysctls allowed:
++      Sysctls beginning with net.*
++
++  If you use the `--net=host` option these sysctls will not be allowed.
++
+ **--sig-proxy**=*true*|*false*
+    Proxy received signals to the process (non-TTY mode only). SIGCHLD, SIGSTOP, and SIGKILL are not proxied. The default is *true*.
+ 
+@@ -927,6 +943,23 @@ $ docker run -d --isolation default busybox top
+ $ docker run -d --isolation hyperv busybox top
+ ```
+ 
++## Setting Namespaced Kernel Parameters (Sysctls)
++
++The `--sysctl` sets namespaced kernel parameters (sysctls) in the
++container. For example, to turn on IP forwarding in the containers
++network namespace, run this command:
++
++    $ docker run --sysctl net.ipv4.ip_forward=1 someimage
++
++Note:
++
++Not all sysctls are namespaced. docker does not support changing sysctls
++inside of a container that also modify the host system. As the kernel 
++evolves we expect to see more sysctls become namespaced.
++
++See the definition of the `--sysctl` option above for the current list of 
++supported sysctls.
++
+ # HISTORY
+ April 2014, Originally compiled by William Henry (whenry at redhat dot com)
+ based on docker.com source material and internal work.
+diff --git a/opts/opts.go b/opts/opts.go
+index 05aadbe..ad7295a 100644
+--- a/opts/opts.go
++++ b/opts/opts.go
+@@ -240,3 +240,35 @@ func ValidateLabel(val string) (string, error) {
+ 	}
+ 	return val, nil
+ }
++
++// ValidateSysctl validates an sysctl and returns it.
++func ValidateSysctl(val string) (string, error) {
++	validSysctlMap := map[string]bool{
++		"kernel.msgmax":          true,
++		"kernel.msgmnb":          true,
++		"kernel.msgmni":          true,
++		"kernel.sem":             true,
++		"kernel.shmall":          true,
++		"kernel.shmmax":          true,
++		"kernel.shmmni":          true,
++		"kernel.shm_rmid_forced": true,
++	}
++	validSysctlPrefixes := []string{
++		"net.",
++		"fs.mqueue.",
++	}
++	arr := strings.Split(val, "=")
++	if len(arr) < 2 {
++		return "", fmt.Errorf("sysctl '%s' is not whitelisted", val)
++	}
++	if validSysctlMap[arr[0]] {
++		return val, nil
++	}
++
++	for _, vp := range validSysctlPrefixes {
++		if strings.HasPrefix(arr[0], vp) {
++			return val, nil
++		}
++	}
++	return "", fmt.Errorf("sysctl '%s' is not whitelisted", val)
++}
+diff --git a/runconfig/opts/parse.go b/runconfig/opts/parse.go
+index b523b06..df46418 100644
+--- a/runconfig/opts/parse.go
++++ b/runconfig/opts/parse.go
+@@ -41,6 +41,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*container.Config, *container.Host
+ 		flDevices           = opts.NewListOpts(ValidateDevice)
+ 
+ 		flUlimits = NewUlimitOpt(nil)
++		flSysctls = opts.NewMapOpts(nil, opts.ValidateSysctl)
+ 
+ 		flPublish           = opts.NewListOpts(nil)
+ 		flExpose            = opts.NewListOpts(nil)
+@@ -122,6 +123,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*container.Config, *container.Host
+ 	cmd.Var(&flGroupAdd, []string{"-group-add"}, "Add additional groups to join")
+ 	cmd.Var(&flSecurityOpt, []string{"-security-opt"}, "Security Options")
+ 	cmd.Var(flUlimits, []string{"-ulimit"}, "Ulimit options")
++	cmd.Var(flSysctls, []string{"-sysctl"}, "Sysctl options")
+ 	cmd.Var(&flLoggingOpts, []string{"-log-opt"}, "Log driver options")
+ 
+ 	cmd.Require(flag.Min, 1)
+@@ -415,6 +417,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*container.Config, *container.Host
+ 		ShmSize:        shmSize,
+ 		Resources:      resources,
+ 		Tmpfs:          tmpfs,
++		Sysctls:        flSysctls.GetAll(),
+ 	}
+ 
+ 	// When allocating stdin in attached mode, close stdin at client disconnect
+diff --git a/vendor/src/github.com/docker/engine-api/types/container/host_config.go b/vendor/src/github.com/docker/engine-api/types/container/host_config.go
+index f43263d..e8d0903 100644
+--- a/vendor/src/github.com/docker/engine-api/types/container/host_config.go
++++ b/vendor/src/github.com/docker/engine-api/types/container/host_config.go
+@@ -225,7 +225,7 @@ type HostConfig struct {
+ 	Tmpfs           map[string]string  `json:",omitempty"` // List of tmpfs (mounts) used for the container
+ 	UTSMode         UTSMode            // UTS namespace to use for the container
+ 	ShmSize         int64              // Total shm memory usage
+-
++	Sysctls         map[string]string  `json:",omitempty"` // List of Namespaced sysctls used for the container
+ 	// Applicable to Windows
+ 	ConsoleSize [2]int         // Initial console size
+ 	Isolation   IsolationLevel // Isolation level of the container (eg default, hyperv)
+-- 
+1.9.1
+

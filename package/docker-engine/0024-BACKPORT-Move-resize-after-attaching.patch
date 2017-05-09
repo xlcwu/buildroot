@@ -1,0 +1,77 @@
+From 6d43c995ff2f7e732fbdd4939cd743379e3f3e17 Mon Sep 17 00:00:00 2001
+From: Andy Goldstein <agoldste@redhat.com>
+Date: Fri, 22 Jan 2016 06:35:55 -0500
+Subject: [PATCH 24/41] BACKPORT: Move resize after attaching
+
+Upstream reference: https://github.com/docker/docker/pull/19835
+
+Resize by +1 when attaching to force redrawing.
+
+Start monitoring window size after the attach begins instead of before. This way, you see the output
+from the container without having to manually resize or hit enter. This makes attach consistent with
+run and exec.
+
+Signed-off-by: Andy Goldstein <agoldste@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ api/client/attach.go | 21 +++++++++++++++------
+ api/client/utils.go  |  4 ++++
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/api/client/attach.go b/api/client/attach.go
+index efdad10..6a62a9d 100644
+--- a/api/client/attach.go
++++ b/api/client/attach.go
+@@ -41,12 +41,6 @@ func (cli *DockerCli) CmdAttach(args ...string) error {
+ 		return err
+ 	}
+ 
+-	if c.Config.Tty && cli.isTerminalOut {
+-		if err := cli.monitorTtySize(cmd.Arg(0), false); err != nil {
+-			logrus.Debugf("Error monitoring TTY size: %s", err)
+-		}
+-	}
+-
+ 	if *detachKeys != "" {
+ 		cli.configFile.DetachKeys = *detachKeys
+ 	}
+@@ -82,6 +76,21 @@ func (cli *DockerCli) CmdAttach(args ...string) error {
+ 		defer cli.restoreTerminal(in)
+ 	}
+ 
++	if c.Config.Tty && cli.isTerminalOut {
++		height, width := cli.getTtySize()
++		// To handle the case where a user repeatedly attaches/detaches without resizing their
++		// terminal, the only way to get the shell prompt to display for attaches 2+ is to artifically
++		// resize it, then go back to normal. Without this, every attach after the first will
++		// require the user to manually resize or hit enter.
++		cli.resizeTtyTo(cmd.Arg(0), height+1, width+1, false)
++
++		// After the above resizing occurs, the call to monitorTtySize below will handle resetting back
++		// to the actual size.
++		if err := cli.monitorTtySize(cmd.Arg(0), false); err != nil {
++			logrus.Debugf("Error monitoring TTY size: %s", err)
++		}
++	}
++
+ 	if err := cli.holdHijackedConnection(c.Config.Tty, in, cli.out, cli.err, resp); err != nil {
+ 		return err
+ 	}
+diff --git a/api/client/utils.go b/api/client/utils.go
+index a92f3bf..1358193 100644
+--- a/api/client/utils.go
++++ b/api/client/utils.go
+@@ -61,6 +61,10 @@ func (cli *DockerCli) registryAuthenticationPrivilegedFunc(index *registrytypes.
+ 
+ func (cli *DockerCli) resizeTty(id string, isExec bool) {
+ 	height, width := cli.getTtySize()
++	cli.resizeTtyTo(id, height, width, isExec)
++}
++
++func (cli *DockerCli) resizeTtyTo(id string, height, width int, isExec bool) {
+ 	if height == 0 && width == 0 {
+ 		return
+ 	}
+-- 
+1.9.1
+

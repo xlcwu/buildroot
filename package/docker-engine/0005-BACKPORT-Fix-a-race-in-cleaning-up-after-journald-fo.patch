@@ -1,0 +1,79 @@
+From fe1616c798f5ccc99d8419fc0eef0acb17ce9e47 Mon Sep 17 00:00:00 2001
+From: Nalin Dahyabhai <nalin@redhat.com>
+Date: Thu, 17 Mar 2016 16:19:54 -0400
+Subject: [PATCH 05/41] BACKPORT: Fix a race in cleaning up after journald
+ followers
+
+Upstream reference: https://github.com/docker/docker/pull/21311
+
+When following a journal-based log, it was possible for the worker
+goroutine, which reads the journal using the journal context and sends
+entry data down the message channel, to be scheduled after the function
+which started it had returned.  This could create problems, since the
+invoking function was closing the journal context object and message
+channel before it returned, which could trigger use-after-free segfaults
+and write-to-closed-channel panics in the worker goroutine.
+
+Make the cleanup in the invoking function conditional so that it's only
+done when we're not following the logs, and if we are, that it's left to
+the worker goroutine to close them.
+
+Signed-off-by: Nalin Dahyabhai <nalin@redhat.com> (github: nalind)
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/logger/journald/read.go | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/daemon/logger/journald/read.go b/daemon/logger/journald/read.go
+index 80c1fbd..49d037b 100644
+--- a/daemon/logger/journald/read.go
++++ b/daemon/logger/journald/read.go
+@@ -184,6 +184,8 @@ func (s *journald) followJournal(logWatcher *logger.LogWatcher, config logger.Re
+ 		s.readers.mu.Lock()
+ 		delete(s.readers.readers, logWatcher)
+ 		s.readers.mu.Unlock()
++		C.sd_journal_close(j)
++		close(logWatcher.Msg)
+ 	}()
+ 	s.readers.mu.Lock()
+ 	s.readers.readers[logWatcher] = logWatcher
+@@ -204,14 +206,24 @@ func (s *journald) readLogs(logWatcher *logger.LogWatcher, config logger.ReadCon
+ 	var pipes [2]C.int
+ 	cursor := ""
+ 
+-	defer close(logWatcher.Msg)
+ 	// Get a handle to the journal.
+ 	rc := C.sd_journal_open(&j, C.int(0))
+ 	if rc != 0 {
+ 		logWatcher.Err <- fmt.Errorf("error opening journal")
++		close(logWatcher.Msg)
+ 		return
+ 	}
+-	defer C.sd_journal_close(j)
++	// If we end up following the log, we can set the journal context
++	// pointer and the channel pointer to nil so that we won't close them
++	// here, potentially while the goroutine that uses them is still
++	// running.  Otherwise, close them when we return from this function.
++	following := false
++	defer func(pfollowing *bool) {
++		if !*pfollowing {
++			C.sd_journal_close(j)
++			close(logWatcher.Msg)
++		}
++	}(&following)
+ 	// Remove limits on the size of data items that we'll retrieve.
+ 	rc = C.sd_journal_set_data_threshold(j, C.size_t(0))
+ 	if rc != 0 {
+@@ -287,6 +299,9 @@ func (s *journald) readLogs(logWatcher *logger.LogWatcher, config logger.ReadCon
+ 			logWatcher.Err <- fmt.Errorf("error opening journald close notification pipe")
+ 		} else {
+ 			s.followJournal(logWatcher, config, j, pipes, cursor)
++			// Let followJournal handle freeing the journal context
++			// object and closing the channel.
++			following = true
+ 		}
+ 	}
+ 	return
+-- 
+1.9.1
+

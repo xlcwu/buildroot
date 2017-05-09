@@ -1,0 +1,42 @@
+From 330c0859b097d5b645942ecbb28045ca6d26b87c Mon Sep 17 00:00:00 2001
+From: Aleksa Sarai <asarai@suse.de>
+Date: Fri, 10 Jun 2016 00:24:04 +1000
+Subject: [PATCH 34/41] BACKPORT: pkg: archive: only ignore ENOTSUP when xattr
+ fails
+
+Upstream reference: https://github.com/docker/docker/pull/23410
+
+There might be other (valid) reasons for setxattr(2) to fail, so only
+ignore it when it's a not supported error (ENOTSUP). Otherwise, bail.
+
+Signed-off-by: Aleksa Sarai <asarai@suse.de>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ pkg/archive/archive.go | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/pkg/archive/archive.go b/pkg/archive/archive.go
+index f48d821..4f5c208 100644
+--- a/pkg/archive/archive.go
++++ b/pkg/archive/archive.go
+@@ -428,8 +428,15 @@ func createTarFile(path, extractDir string, hdr *tar.Header, reader io.Reader, L
+ 	var errors []string
+ 	for key, value := range hdr.Xattrs {
+ 		if err := system.Lsetxattr(path, key, []byte(value), 0); err != nil {
+-			// We ignore errors here because not all graphdrivers support xattrs.
+-			errors = append(errors, err.Error())
++			if err == syscall.ENOTSUP {
++				// We ignore errors here because not all graphdrivers support
++				// xattrs *cough* old versions of AUFS *cough*. However only
++				// ENOTSUP should be emitted in that case, otherwise we still
++				// bail.
++				errors = append(errors, err.Error())
++				continue
++			}
++			return err
+ 		}
+ 
+ 	}
+-- 
+1.9.1
+

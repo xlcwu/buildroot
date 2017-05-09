@@ -1,0 +1,29 @@
+From 41c37a45488021e971ac04af14ce5458e044cf89 Mon Sep 17 00:00:00 2001
+From: Antonio Murdaca <runcom@redhat.com>
+Date: Wed, 4 May 2016 12:09:00 +0200
+Subject: [PATCH 22/41] BACKPORT: Correctly set content type for image load
+
+Upstream reference: https://github.com/docker/engine-api/pull/98
+
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ vendor/src/github.com/docker/engine-api/client/image_load.go | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/vendor/src/github.com/docker/engine-api/client/image_load.go b/vendor/src/github.com/docker/engine-api/client/image_load.go
+index ea6924a..82853a7 100644
+--- a/vendor/src/github.com/docker/engine-api/client/image_load.go
++++ b/vendor/src/github.com/docker/engine-api/client/image_load.go
+@@ -11,7 +11,8 @@ import (
+ // It's up to the caller to close the io.ReadCloser returned by
+ // this function.
+ func (cli *Client) ImageLoad(input io.Reader) (types.ImageLoadResponse, error) {
+-	resp, err := cli.postRaw("/images/load", url.Values{}, input, nil)
++	headers := map[string][]string{"Content-Type": {"application/x-tar"}}
++	resp, err := cli.postRaw("/images/load", url.Values{}, input, headers)
+ 	if err != nil {
+ 		return types.ImageLoadResponse{}, err
+ 	}
+-- 
+1.9.1
+

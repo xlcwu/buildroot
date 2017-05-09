@@ -1,0 +1,58 @@
+From dc7152e62e794631aa5c04b1cc5f9726d555ecd6 Mon Sep 17 00:00:00 2001
+From: Nalin Dahyabhai <nalin@redhat.com>
+Date: Fri, 18 Mar 2016 09:06:30 -0400
+Subject: [PATCH 08/41] BACKPORT: Open the journald following descriptor
+ earlier
+
+Upstream reference: https://github.com/docker/docker/pull/21309
+
+Following a journal log almost always requires a descriptor to be
+allocated.  In cases where we're running out of descriptors, this means
+we might get stuck while attempting to start following the journal, at a
+point where it's too late to report it to the client and clean up
+easily.  The journal reading context will cache the value once it's
+allocated, so here we move the check earlier, so that we can detect a
+problem when we can still report it cleanly.
+
+Signed-off-by: Nalin Dahyabhai <nalin@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ daemon/logger/journald/read.go | 21 ++++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/daemon/logger/journald/read.go b/daemon/logger/journald/read.go
+index ce3492f..126d68c 100644
+--- a/daemon/logger/journald/read.go
++++ b/daemon/logger/journald/read.go
+@@ -304,14 +304,21 @@ func (s *journald) readLogs(logWatcher *logger.LogWatcher, config logger.ReadCon
+ 	}
+ 	cursor = s.drainJournal(logWatcher, config, j, "")
+ 	if config.Follow {
+-		// Create a pipe that we can poll at the same time as the journald descriptor.
+-		if C.pipe(&pipes[0]) == C.int(-1) {
+-			logWatcher.Err <- fmt.Errorf("error opening journald close notification pipe")
++		// Allocate a descriptor for following the journal, if we'll
++		// need one.  Do it here so that we can report if it fails.
++		if fd := C.sd_journal_get_fd(j); fd < C.int(0) {
++			logWatcher.Err <- fmt.Errorf("error opening journald follow descriptor: %q", C.GoString(C.strerror(fd)))
+ 		} else {
+-			s.followJournal(logWatcher, config, j, pipes, cursor)
+-			// Let followJournal handle freeing the journal context
+-			// object and closing the channel.
+-			following = true
++			// Create a pipe that we can poll at the same time as
++			// the journald descriptor.
++			if C.pipe(&pipes[0]) == C.int(-1) {
++				logWatcher.Err <- fmt.Errorf("error opening journald close notification pipe")
++			} else {
++				s.followJournal(logWatcher, config, j, pipes, cursor)
++				// Let followJournal handle freeing the journal context
++				// object and closing the channel.
++				following = true
++			}
+ 		}
+ 	}
+ 	return
+-- 
+1.9.1
+

@@ -1,0 +1,37 @@
+From 5848cef242b27708443cd081005f7b1022557e84 Mon Sep 17 00:00:00 2001
+From: Mrunal Patel <mrunalp@gmail.com>
+Date: Tue, 15 Mar 2016 12:03:11 -0700
+Subject: [PATCH 04/41] BACKPORT: Set Delegate=yes for cgroups transient units
+
+Upstream reference: https://github.com/opencontainers/runc/pull/648
+
+Signed-off-by: Mrunal Patel <mrunalp@gmail.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ .../opencontainers/runc/libcontainer/cgroups/systemd/apply_systemd.go  | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/cgroups/systemd/apply_systemd.go b/vendor/src/github.com/opencontainers/runc/libcontainer/cgroups/systemd/apply_systemd.go
+index 0e3034b..4c07d91 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/cgroups/systemd/apply_systemd.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/cgroups/systemd/apply_systemd.go
+@@ -175,6 +175,7 @@ func (m *Manager) Apply(pid int) error {
+ 		systemdDbus.PropSlice(slice),
+ 		systemdDbus.PropDescription("docker container "+c.Name),
+ 		newProp("PIDs", []uint32{uint32(pid)}),
++		newProp("Delegate", true),
+ 	)
+ 
+ 	// Always enable accounting, this gets us the same behaviour as the fs implementation,
+@@ -293,7 +294,7 @@ func getSubsystemPath(c *configs.Cgroup, subsystem string) (string, error) {
+ 		return "", err
+ 	}
+ 
+-	initPath, err := cgroups.GetInitCgroupDir(subsystem)
++	initPath, err := cgroups.GetThisCgroupDir(subsystem)
+ 	if err != nil {
+ 		return "", err
+ 	}
+-- 
+1.9.1
+

@@ -1,0 +1,370 @@
+From 827d68a77918e4120158074e4a928f8a35f9bcab Mon Sep 17 00:00:00 2001
+From: Mrunal Patel <mrunalp@gmail.com>
+Date: Thu, 10 Mar 2016 18:35:12 -0500
+Subject: [PATCH 03/41] BACKPORT: Move prestart hooks after container mounts
+
+Upstream reference:
+https://github.com/opencontainers/runc/commit/2f276498480bb9219487bad47f79e4ef756d00e1
+
+Signed-off-by: Mrunal Patel <mrunalp@gmail.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ .../runc/libcontainer/factory_linux.go             |  17 +++-
+ .../runc/libcontainer/generic_error.go             |  14 +++
+ .../opencontainers/runc/libcontainer/init_linux.go |  44 +++++++++
+ .../runc/libcontainer/process_linux.go             | 105 ++++++++++++++++-----
+ .../runc/libcontainer/rootfs_linux.go              |  10 +-
+ .../runc/libcontainer/standard_init_linux.go       |  10 +-
+ 6 files changed, 172 insertions(+), 28 deletions(-)
+
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/factory_linux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/factory_linux.go
+index d03ce86..6127884 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/factory_linux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/factory_linux.go
+@@ -222,18 +222,25 @@ func (l *LinuxFactory) StartInitialization() (err error) {
+ 	// clear the current process's environment to clean any libcontainer
+ 	// specific env vars.
+ 	os.Clearenv()
++	var i initer
+ 	defer func() {
+-		// if we have an error during the initialization of the container's init then send it back to the
+-		// parent process in the form of an initError.
+-		if err != nil {
+-			if err := utils.WriteJSON(pipe, newSystemError(err)); err != nil {
++		// We have an error during the initialization of the container's init,
++		// send it back to the parent process in the form of an initError.
++		// If container's init successed, syscall.Exec will not return, hence
++		// this defer function will never be called.
++		if _, ok := i.(*linuxStandardInit); ok {
++			//  Synchronisation only necessary for standard init.
++			if err := utils.WriteJSON(pipe, syncT{procError}); err != nil {
+ 				panic(err)
+ 			}
+ 		}
++		if err := utils.WriteJSON(pipe, newSystemError(err)); err != nil {
++			panic(err)
++		}
+ 		// ensure that this pipe is always closed
+ 		pipe.Close()
+ 	}()
+-	i, err := newContainerInit(it, pipe)
++	i, err = newContainerInit(it, pipe)
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/generic_error.go b/vendor/src/github.com/opencontainers/runc/libcontainer/generic_error.go
+index 6fbc2d7..93bb757 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/generic_error.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/generic_error.go
+@@ -9,6 +9,20 @@ import (
+ 	"github.com/opencontainers/runc/libcontainer/stacktrace"
+ )
+ 
++type syncType uint8
++
++const (
++	procReady syncType = iota
++	procError
++	procRun
++	procHooks
++	procResume
++)
++
++type syncT struct {
++	Type syncType `json:"type"`
++}
++
+ var errorTemplate = template.Must(template.New("error").Parse(`Timestamp: {{.Timestamp}}
+ Code: {{.ECode}}
+ {{if .Message }}
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/init_linux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/init_linux.go
+index ddb1186..7cc1031 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/init_linux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/init_linux.go
+@@ -5,6 +5,7 @@ package libcontainer
+ import (
+ 	"encoding/json"
+ 	"fmt"
++	"io"
+ 	"io/ioutil"
+ 	"net"
+ 	"os"
+@@ -73,6 +74,7 @@ func newContainerInit(t initType, pipe *os.File) (initer, error) {
+ 		}, nil
+ 	case initStandard:
+ 		return &linuxStandardInit{
++			pipe:      pipe,
+ 			parentPid: syscall.Getppid(),
+ 			config:    config,
+ 		}, nil
+@@ -159,6 +161,48 @@ func joinExistingNamespaces(namespaces []configs.Namespace) error {
+ 	return nil
+ }
+ 
++// syncParentReady sends to the given pipe a JSON payload which indicates that
++// the init is ready to Exec the child process. It then waits for the parent to
++// indicate that it is cleared to Exec.
++func syncParentReady(pipe io.ReadWriter) error {
++	// Tell parent.
++	if err := utils.WriteJSON(pipe, syncT{procReady}); err != nil {
++		return err
++	}
++	// Wait for parent to give the all-clear.
++	var procSync syncT
++	if err := json.NewDecoder(pipe).Decode(&procSync); err != nil {
++		if err == io.EOF {
++			return fmt.Errorf("parent closed synchronisation channel ready")
++		}
++		if procSync.Type != procRun {
++			return fmt.Errorf("invalid synchronisation flag from parent")
++		}
++	}
++	return nil
++}
++
++// syncParentHooks sends to the given pipe a JSON payload which indicates that
++// the parent should execute pre-start hooks. It then waits for the parent to
++// indicate that it is cleared to resume.
++func syncParentHooks(pipe io.ReadWriter) error {
++	// Tell parent.
++	if err := utils.WriteJSON(pipe, syncT{procHooks}); err != nil {
++		return err
++	}
++	// Wait for parent to give the all-clear.
++	var procSync syncT
++	if err := json.NewDecoder(pipe).Decode(&procSync); err != nil {
++		if err == io.EOF {
++			return fmt.Errorf("parent closed synchronisation channel sync")
++		}
++		if procSync.Type != procResume {
++			return fmt.Errorf("invalid synchronisation flag from parent")
++		}
++	}
++	return nil
++}
++
+ // setupUser changes the groups, gid, and uid for the user inside the container
+ func setupUser(config *initConfig) error {
+ 	// Set up defaults.
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/process_linux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/process_linux.go
+index ee64736..89cfb2d 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/process_linux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/process_linux.go
+@@ -5,6 +5,7 @@ package libcontainer
+ import (
+ 	"encoding/json"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"os"
+ 	"os/exec"
+@@ -211,34 +212,100 @@ func (p *initProcess) start() (err error) {
+ 			p.manager.Destroy()
+ 		}
+ 	}()
+-	if p.config.Config.Hooks != nil {
+-		s := configs.HookState{
+-			Version: p.container.config.Version,
+-			ID:      p.container.id,
+-			Pid:     p.pid(),
+-			Root:    p.config.Config.Rootfs,
++	if err := p.createNetworkInterfaces(); err != nil {
++		return newSystemError(err)
++	}
++	if err := p.sendConfig(); err != nil {
++		return newSystemError(err)
++	}
++
++	var (
++		procSync   syncT
++		sentRun    bool
++		sentResume bool
++		ierr       *genericError
++	)
++
++loop:
++	for {
++		if err := json.NewDecoder(p.parentPipe).Decode(&procSync); err != nil {
++			if err == io.EOF {
++				break loop
++			}
++			return newSystemError(err)
+ 		}
+-		for _, hook := range p.config.Config.Hooks.Prestart {
+-			if err := hook.Run(s); err != nil {
++		switch procSync.Type {
++		case procReady:
++			// call prestart hooks
++			if !p.config.Config.Namespaces.Contains(configs.NEWNS) {
++				if p.config.Config.Hooks != nil {
++					s := configs.HookState{
++						Version: p.container.config.Version,
++						ID:      p.container.id,
++						Pid:     p.pid(),
++						Root:    p.config.Config.Rootfs,
++					}
++					for _, hook := range p.config.Config.Hooks.Prestart {
++						if err := hook.Run(s); err != nil {
++							return newSystemError(err)
++						}
++					}
++				}
++			}
++			// Sync with child.
++			if err := utils.WriteJSON(p.parentPipe, syncT{procRun}); err != nil {
++				return newSystemError(err)
++			}
++			sentRun = true
++		case procHooks:
++			if p.config.Config.Hooks != nil {
++				s := configs.HookState{
++					Version: p.container.config.Version,
++					ID:      p.container.id,
++					Pid:     p.pid(),
++					Root:    p.config.Config.Rootfs,
++				}
++				for _, hook := range p.config.Config.Hooks.Prestart {
++					if err := hook.Run(s); err != nil {
++						return newSystemError(err)
++					}
++				}
++			}
++			// Sync with child.
++			if err := utils.WriteJSON(p.parentPipe, syncT{procResume}); err != nil {
++				return newSystemError(err)
++			}
++			sentResume = true
++		case procError:
++			// wait for the child process to fully complete and receive an error message
++			// if one was encoutered
++			if err := json.NewDecoder(p.parentPipe).Decode(&ierr); err != nil && err != io.EOF {
+ 				return newSystemError(err)
+ 			}
++			if ierr != nil {
++				break loop
++			}
++			// Programmer error.
++			panic("No error following JSON procError payload.")
++		default:
++			return newSystemError(fmt.Errorf("invalid JSON synchronisation payload from child"))
+ 		}
+ 	}
+-	if err := p.createNetworkInterfaces(); err != nil {
+-		return newSystemError(err)
++	if !sentRun {
++		return newSystemError(fmt.Errorf("could not synchronise with container process"))
+ 	}
+-	if err := p.sendConfig(); err != nil {
+-		return newSystemError(err)
++	if p.config.Config.Namespaces.Contains(configs.NEWNS) && !sentResume {
++		return newSystemError(fmt.Errorf("could not synchronise after executing prestart hooks with container process"))
+ 	}
+-	// wait for the child process to fully complete and receive an error message
+-	// if one was encoutered
+-	var ierr *genericError
+-	if err := json.NewDecoder(p.parentPipe).Decode(&ierr); err != nil && err != io.EOF {
++	if err := syscall.Shutdown(int(p.parentPipe.Fd()), syscall.SHUT_WR); err != nil {
+ 		return newSystemError(err)
+ 	}
++	// Must be done after Shutdown so the child will exit and we can wait for it.
+ 	if ierr != nil {
++		p.wait()
+ 		return newSystemError(ierr)
+ 	}
++
+ 	return nil
+ }
+ 
+@@ -271,11 +338,7 @@ func (p *initProcess) startTime() (string, error) {
+ 
+ func (p *initProcess) sendConfig() error {
+ 	// send the state to the container's init process then shutdown writes for the parent
+-	if err := utils.WriteJSON(p.parentPipe, p.config); err != nil {
+-		return err
+-	}
+-	// shutdown writes for the parent side of the pipe
+-	return syscall.Shutdown(int(p.parentPipe.Fd()), syscall.SHUT_WR)
++	return utils.WriteJSON(p.parentPipe, p.config)
+ }
+ 
+ func (p *initProcess) createNetworkInterfaces() error {
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/rootfs_linux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/rootfs_linux.go
+index 5a2fad8..bce2d17 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/rootfs_linux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/rootfs_linux.go
+@@ -4,6 +4,7 @@ package libcontainer
+ 
+ import (
+ 	"fmt"
++	"io"
+ 	"io/ioutil"
+ 	"os"
+ 	"os/exec"
+@@ -24,7 +25,7 @@ const defaultMountFlags = syscall.MS_NOEXEC | syscall.MS_NOSUID | syscall.MS_NOD
+ 
+ // setupRootfs sets up the devices, mount points, and filesystems for use inside a
+ // new mount namespace.
+-func setupRootfs(config *configs.Config, console *linuxConsole) (err error) {
++func setupRootfs(config *configs.Config, console *linuxConsole, pipe io.ReadWriter) (err error) {
+ 	if err := prepareRoot(config); err != nil {
+ 		return newSystemError(err)
+ 	}
+@@ -57,6 +58,13 @@ func setupRootfs(config *configs.Config, console *linuxConsole) (err error) {
+ 			return newSystemError(err)
+ 		}
+ 	}
++	// Signal the parent to run the pre-start hooks.
++	// The hooks are run after the mounts are setup, but before we switch to the new
++	// root, so that the old root is still available in the hooks for any mount
++	// manipulations.
++	if err := syncParentHooks(pipe); err != nil {
++		return err
++	}
+ 	if err := syscall.Chdir(config.Rootfs); err != nil {
+ 		return newSystemError(err)
+ 	}
+diff --git a/vendor/src/github.com/opencontainers/runc/libcontainer/standard_init_linux.go b/vendor/src/github.com/opencontainers/runc/libcontainer/standard_init_linux.go
+index ec10057..a5196a4 100644
+--- a/vendor/src/github.com/opencontainers/runc/libcontainer/standard_init_linux.go
++++ b/vendor/src/github.com/opencontainers/runc/libcontainer/standard_init_linux.go
+@@ -3,6 +3,7 @@
+ package libcontainer
+ 
+ import (
++	"io"
+ 	"os"
+ 	"syscall"
+ 
+@@ -14,6 +15,7 @@ import (
+ )
+ 
+ type linuxStandardInit struct {
++	pipe      io.ReadWriter
+ 	parentPid int
+ 	config    *initConfig
+ }
+@@ -54,7 +56,7 @@ func (l *linuxStandardInit) Init() error {
+ 	label.Init()
+ 	// InitializeMountNamespace() can be executed only for a new mount namespace
+ 	if l.config.Config.Namespaces.Contains(configs.NEWNS) {
+-		if err := setupRootfs(l.config.Config, console); err != nil {
++		if err := setupRootfs(l.config.Config, console, l.pipe); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -90,6 +92,12 @@ func (l *linuxStandardInit) Init() error {
+ 	if err != nil {
+ 		return err
+ 	}
++	// Tell our parent that we're ready to Execv. This must be done before the
++	// Seccomp rules have been applied, because we need to be able to read and
++	// write to a socket.
++	if err := syncParentReady(l.pipe); err != nil {
++		return err
++	}
+ 	if l.config.Config.Seccomp != nil {
+ 		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
+ 			return err
+-- 
+1.9.1
+

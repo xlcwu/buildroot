@@ -1,0 +1,52 @@
+From aa2d4dd89cecdf33c5f723676a3c5ba686a8ae43 Mon Sep 17 00:00:00 2001
+From: Jhon Honce <jhonce@redhat.com>
+Date: Thu, 28 Apr 2016 12:34:45 -0700
+Subject: [PATCH 21/41] BACKPORT: Ignore SIGPIPE events
+
+Upstream reference: https://github.com/docker/docker/pull/22460
+
+Using golang 1.6, is it now possible to ignore SIGPIPE events on
+stdout/stderr.  Previous versions of the golang library cached 10
+events and then killed the process receiving the events.
+
+systemd-journald sends SIGPIPE events when jounald is restarted and the
+target of the unit file writes to stdout/stderr.  Docker logs to stdout/stderr.
+
+This patch silently ignores all SIGPIPE events.
+
+Signed-off-by: Jhon Honce <jhonce@redhat.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ docker/docker.go | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/docker/docker.go b/docker/docker.go
+index 39b527e..86ae436 100644
+--- a/docker/docker.go
++++ b/docker/docker.go
+@@ -3,6 +3,8 @@ package main
+ import (
+ 	"fmt"
+ 	"os"
++	"os/signal"
++	"syscall"
+ 
+ 	"github.com/Sirupsen/logrus"
+ 	"github.com/docker/docker/api/client"
+@@ -19,6 +21,13 @@ func main() {
+ 		return
+ 	}
+ 
++	go func() {
++		c := make(chan os.Signal)
++		signal.Notify(c, os.Signal(syscall.SIGPIPE))
++		for range c {
++		}
++	}()
++
+ 	// Set terminal emulation based on platform as required.
+ 	stdin, stdout, stderr := term.StdStreams()
+ 
+-- 
+1.9.1
+

@@ -1,0 +1,156 @@
+From 72dd4433ef401e05731b53698dfc1c1631cd6796 Mon Sep 17 00:00:00 2001
+From: Liron Levin <liron@twistlock.com>
+Date: Tue, 23 Feb 2016 12:04:16 +0200
+Subject: [PATCH 23/41] BACKPORT: Fix #20508 - Authz plugin enabled with large
+ text/JSON POST payload corrupts body
+
+Upstrem reference: https://github.com/docker/docker/pull/20602
+
+Based on the discussion, we have changed the following:
+
+1. Send body only if content-type is application/json (based on the
+Docker official daemon REST specification, this is the provided for all
+APIs that requires authorization.
+
+2. Correctly verify that the msg body is smaller than max cap (this was
+the actual bug). Fix includes UT.
+
+3. Minor: Check content length > 0 (it was -1 for load, altough an
+attacker can still modify this)
+
+Signed-off-by: Liron Levin <liron@twistlock.com>
+Signed-off-by: Antonio Murdaca <runcom@redhat.com>
+---
+ pkg/authorization/authz.go      | 37 +++++++++++++++++--------------------
+ pkg/authorization/authz_test.go | 37 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 54 insertions(+), 20 deletions(-)
+
+diff --git a/pkg/authorization/authz.go b/pkg/authorization/authz.go
+index 8a15b2b..f703908 100644
+--- a/pkg/authorization/authz.go
++++ b/pkg/authorization/authz.go
+@@ -54,13 +54,11 @@ type Ctx struct {
+ // AuthZRequest authorized the request to the docker daemon using authZ plugins
+ func (ctx *Ctx) AuthZRequest(w http.ResponseWriter, r *http.Request) error {
+ 	var body []byte
+-	if sendBody(ctx.requestURI, r.Header) {
+-		if r.ContentLength < maxBodySize {
+-			var err error
+-			body, r.Body, err = drainBody(r.Body)
+-			if err != nil {
+-				return err
+-			}
++	if sendBody(ctx.requestURI, r.Header) && r.ContentLength > 0 && r.ContentLength < maxBodySize {
++		var err error
++		body, r.Body, err = drainBody(r.Body)
++		if err != nil {
++			return err
+ 		}
+ 	}
+ 
+@@ -121,23 +119,23 @@ func (ctx *Ctx) AuthZResponse(rm ResponseModifier, r *http.Request) error {
+ 	return nil
+ }
+ 
+-// drainBody dump the body, it reads the body data into memory and
+-// see go sources /go/src/net/http/httputil/dump.go
++// drainBody dump the body (if it's length is less than 1MB) without modifying the request state
+ func drainBody(body io.ReadCloser) ([]byte, io.ReadCloser, error) {
+ 	bufReader := bufio.NewReaderSize(body, maxBodySize)
+ 	newBody := ioutils.NewReadCloserWrapper(bufReader, func() error { return body.Close() })
+ 
+ 	data, err := bufReader.Peek(maxBodySize)
+-	if err != io.EOF {
+-		// This means the request is larger than our max
+-		if err == bufio.ErrBufferFull {
+-			return nil, newBody, nil
+-		}
+-		// This means we had an error reading
+-		return nil, nil, err
++	// Body size exceeds max body size
++	if err == nil {
++		logrus.Warnf("Request body is larger than: '%d' skipping body", maxBodySize)
++		return nil, newBody, nil
+ 	}
+-
+-	return data, newBody, nil
++	// Body size is less than maximum size
++	if err == io.EOF {
++		return data, newBody, nil
++	}
++	// Unknown error
++	return nil, newBody, err
+ }
+ 
+ // sendBody returns true when request/response body should be sent to AuthZPlugin
+@@ -148,8 +146,7 @@ func sendBody(url string, header http.Header) bool {
+ 	}
+ 
+ 	// body is sent only for text or json messages
+-	v := header.Get("Content-Type")
+-	return strings.HasPrefix(v, "text/") || v == "application/json"
++	return header.Get("Content-Type") == "application/json"
+ }
+ 
+ // headers returns flatten version of the http headers excluding authorization
+diff --git a/pkg/authorization/authz_test.go b/pkg/authorization/authz_test.go
+index 3a6a991..61650a5 100644
+--- a/pkg/authorization/authz_test.go
++++ b/pkg/authorization/authz_test.go
+@@ -12,9 +12,11 @@ import (
+ 	"reflect"
+ 	"testing"
+ 
++	"bytes"
+ 	"github.com/docker/docker/pkg/plugins"
+ 	"github.com/docker/go-connections/tlsconfig"
+ 	"github.com/gorilla/mux"
++	"strings"
+ )
+ 
+ const pluginAddress = "authzplugin.sock"
+@@ -130,6 +132,41 @@ func TestResponseModifier(t *testing.T) {
+ 	}
+ }
+ 
++func TestDrainBody(t *testing.T) {
++
++	tests := []struct {
++		length             int // length is the message length send to drainBody
++		expectedBodyLength int // expectedBodyLength is the expected body length after drainBody is called
++	}{
++		{10, 10}, // Small message size
++		{maxBodySize - 1, maxBodySize - 1}, // Max message size
++		{maxBodySize * 2, 0},               // Large message size (skip copying body)
++
++	}
++
++	for _, test := range tests {
++
++		msg := strings.Repeat("a", test.length)
++		body, closer, err := drainBody(ioutil.NopCloser(bytes.NewReader([]byte(msg))))
++		if len(body) != test.expectedBodyLength {
++			t.Fatalf("Body must be copied, actual length: '%d'", len(body))
++		}
++		if closer == nil {
++			t.Fatalf("Closer must not be nil")
++		}
++		if err != nil {
++			t.Fatalf("Error must not be nil: '%v'", err)
++		}
++		modified, err := ioutil.ReadAll(closer)
++		if err != nil {
++			t.Fatalf("Error must not be nil: '%v'", err)
++		}
++		if len(modified) != len(msg) {
++			t.Fatalf("Result should not be truncated. Original length: '%d', new length: '%d'", len(msg), len(modified))
++		}
++	}
++}
++
+ func TestResponseModifierOverride(t *testing.T) {
+ 	r := httptest.NewRecorder()
+ 	m := NewResponseModifier(r)
+-- 
+1.9.1
+
