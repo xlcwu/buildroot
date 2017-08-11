@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PYTHON_S3CMD
+	bool "python-s3cmd"
+	select BR2_PACKAGE_PYTHON_DATEUTIL # runtime
+	select BR2_PACKAGE_PYTHON_MAGIC # runtime
+	help
+	  Command line tool for managing Amazon S3 and CloudFront services.
+
+	  http://s3tools.org
