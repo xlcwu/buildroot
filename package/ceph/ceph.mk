@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-CEPH_VERSION = 10.2.9
+CEPH_VERSION = 10.2.10
 CEPH_SOURCE = ceph-$(CEPH_VERSION).tar.gz
 CEPH_SITE = http://download.ceph.com/tarballs
 #CEPH_SITE = $(call github,ceph,ceph,$(CEPH_VERSION))
