@@ -10,8 +10,13 @@ choice
 	prompt "glibc version"
 	default BR2_GLIBC_VERSION_2_23
 
+config BR2_GLIBC_VERSION_2_21
+	bool "2.21"
+
 config BR2_GLIBC_VERSION_2_22
 	bool "2.22"
+	# No support for pthread barriers on < v9 ISA
+	depends on !BR2_sparc
 	# Too old to build with gcc >= 6.x
 	depends on !BR2_TOOLCHAIN_GCC_AT_LEAST_6
 
@@ -41,6 +46,7 @@ endif
 
 config BR2_GLIBC_VERSION_STRING
 	string
+	default "2.21" if BR2_GLIBC_VERSION_2_21
 	default "2.22" if BR2_GLIBC_VERSION_2_22
 	default "2.23" if BR2_GLIBC_VERSION_2_23
 	default "2.24" if BR2_GLIBC_VERSION_2_24
