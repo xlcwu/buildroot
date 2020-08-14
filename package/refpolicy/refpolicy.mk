@@ -4,12 +4,9 @@
 #
 ################################################################################
 
-REFPOLICY_VERSION = RELEASE_2_20170204
-
-# Do not use GitHub helper as git submodules are needed for refpolicy-contrib
-REFPOLICY_SITE = https://github.com/TresysTechnology/refpolicy.git
-REFPOLICY_SITE_METHOD = git
-REFPOLICY_GIT_SUBMODULES = y # Required for refpolicy-contrib
+REFPOLICY_VERSION = 2.20200229
+REFPOLICY_SOURCE = refpolicy-$(REFPOLICY_VERSION).tar.bz2
+REFPOLICY_SITE = https://github.com/SELinuxProject/refpolicy/releases/download/RELEASE_2_20200229
 REFPOLICY_LICENSE = GPL-2.0
 REFPOLICY_LICENSE_FILES = COPYING
 REFPOLICY_INSTALL_STAGING = YES
@@ -17,28 +14,33 @@ REFPOLICY_DEPENDENCIES = \
 	host-m4 \
 	host-checkpolicy \
 	host-policycoreutils \
+	host-python3 \
 	host-setools \
-	host-gawk \
-	host-python \
-	policycoreutils
+	host-gawk
 
 # Cannot use multiple threads to build the reference policy
 REFPOLICY_MAKE = \
+	PYTHON=$(HOST_DIR)/usr/bin/python3 \
 	TEST_TOOLCHAIN=$(HOST_DIR) \
-	PYTHON="$(HOST_DIR)/bin/python2" \
 	$(TARGET_MAKE_ENV) \
 	$(MAKE1)
 
-REFPOLICY_POLICY_VERSION = \
-	$(call qstrip,$(BR2_PACKAGE_REFPOLICY_POLICY_VERSION))
+REFPOLICY_POLICY_VERSION = $(BR2_PACKAGE_LIBSEPOL_POLICY_VERSION)
 REFPOLICY_POLICY_STATE = \
 	$(call qstrip,$(BR2_PACKAGE_REFPOLICY_POLICY_STATE))
+
+ifeq ($(BR2_INIT_SYSTEMD),y)
+define REFPOLICY_CONFIGURE_SYSTEMD
+	$(SED) "/SYSTEMD/c\SYSTEMD = y" $(@D)/build.conf
+endef
+endif
 
 define REFPOLICY_CONFIGURE_CMDS
 	$(SED) "/OUTPUT_POLICY/c\OUTPUT_POLICY = $(REFPOLICY_POLICY_VERSION)" \
 		$(@D)/build.conf
 	$(SED) "/MONOLITHIC/c\MONOLITHIC = y" $(@D)/build.conf
 	$(SED) "/NAME/c\NAME = targeted" $(@D)/build.conf
+	$(REFPOLICY_CONFIGURE_SYSTEMD)
 endef
 
 define REFPOLICY_BUILD_CMDS
